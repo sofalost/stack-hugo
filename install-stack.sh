@@ -175,6 +175,27 @@ docker network create ai-network >/dev/null 2>&1
 
 if docker ps -a --format '{{.Names}}' | grep -qx '9router'; then
   ok "Conteneur 9router déjà présent."
+  # Mise à jour de l'image même si le conteneur existe (données préservées :
+  # elles vivent sur le volume 9router-data, pas dans le conteneur).
+  say "Update image 9router..."
+  img_avant=$(docker inspect 9router --format '{{.Image}}' 2>/dev/null)
+  if docker pull decolua/9router:latest; then
+    img_apres=$(docker image inspect decolua/9router:latest --format '{{.Id}}' 2>/dev/null)
+    if [ "$img_avant" != "$img_apres" ]; then
+      echo "⬆️ Nouvelle image — recréation du conteneur..."
+      docker tag decolua/9router:latest decolua/9router:stack-rollback >/dev/null 2>&1
+      docker stop 9router >/dev/null 2>&1
+      docker rm 9router >/dev/null 2>&1
+      docker run -d --name 9router --restart always --network ai-network \
+        -p 20128:20128 -v 9router-data:/app/data decolua/9router:latest >/dev/null \
+        && ok "9router recréé sur la nouvelle image (données préservées)." \
+        || die "Recréation 9router échouée — rollback : docker run -d --name 9router --restart always --network ai-network -p 20128:20128 -v 9router-data:/app/data decolua/9router:stack-rollback"
+    else
+      ok "Image 9router déjà à jour."
+    fi
+  else
+    warn "docker pull KO — conteneur existant conservé."
+  fi
 else
   docker volume create 9router-data >/dev/null 2>&1
   docker pull decolua/9router:latest \
@@ -416,8 +437,9 @@ if command -v hermes >/dev/null 2>&1; then
   hermes config set model.api_key "$NR_KEY_PLACEHOLDER" >/dev/null 2>&1
   hermes config set model_overrides.custom.9glm.context_window 256000 --force >/dev/null 2>&1
   hermes config set model_overrides.custom.9glm.max_output_tokens 128000 --force >/dev/null 2>&1
-  # MCP Scrapling (chemin absolu du binaire)
-  hermes mcp add ScraplingServer --command "$HOME/.local/bin/scrapling-mcp" >/dev/null 2>&1 \
+  # MCP Scrapling (chemin absolu du binaire) — printf Y : hermes demande
+  # confirmation interactive "Enable all tools?" qui bloquerait le script.
+  printf 'Y\n' | hermes mcp add ScraplingServer --command "$HOME/.local/bin/scrapling-mcp" >/dev/null 2>&1 \
     || warn "hermes mcp add ScraplingServer KO"
   ok "Hermes → 9router"
 fi
