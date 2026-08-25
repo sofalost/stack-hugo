@@ -291,6 +291,11 @@ json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_CONTEXT_TOKENS 100000
 json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_OUTPUT_TOKENS 128000
 json_set "$HOME/.claude/settings.json" model 9sonnet
 json_set "$HOME/.claude/settings.json" hasCompletedOnboarding true
+# Autoupdate natif (le reste : ~/.claude.json, pas settings.json)
+if [ -f "$HOME/.claude.json" ]; then
+  cp "$HOME/.claude.json" "$HOME/.claude.json.bak-stack"
+fi
+json_set "$HOME/.claude.json" autoUpdates true
 
 # --- claude-hud (plugin + statusLine) ----------------------------------------
 say "claude-hud"
@@ -388,6 +393,7 @@ d["provider"] = {"9router": {
     "models": models,
 }}
 d["model"] = "9router/9glm"
+d["autoupdate"] = True
 d["mcp"] = {
     "ScraplingServer": {
         "type": "local",
