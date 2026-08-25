@@ -124,7 +124,11 @@ fi
 command -v claude >/dev/null 2>&1 && ok "Claude Code" || warn "Claude Code absent."
 
 if ! command -v openclaw >/dev/null 2>&1; then
-  curl -fsSL https://openclaw.ai/install.sh | bash || npm install -g openclaw || warn "OpenClaw : install KO"
+  # --no-onboard : sans lui, l'installer lance openclaw onboard + le dashboard
+  # en plein milieu du script ( comportement signalé par un pote).
+  curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard --no-prompt \
+    || npm install -g openclaw \
+    || warn "OpenClaw : install KO"
 fi
 command -v openclaw >/dev/null 2>&1 && ok "OpenClaw" || warn "OpenClaw absent."
 
