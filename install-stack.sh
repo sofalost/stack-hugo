@@ -3,7 +3,7 @@
 # Stack IA de Hugo — installateur pour potes (WSL2 Ubuntu)
 # Usage : bash <(curl -fsSL https://raw.githubusercontent.com/sofalost/stack-hugo/master/install-stack.sh)
 # (le script se suffit à lui-même : il clone le repo public sofalost/stack-hugo
-# pour récupérer les 28 skills si besoin)
+# pour récupérer les 27 skills si besoin)
 # Ce que fait le script : 1) installe tout (6 applis, skills, conteneur 9router)
 # 2) configure les 6 applis sur 9router 3) à la fin, demande la clé API et
 # termine la config 4) ajoute la fonction `sofalost` dans ~/.bashrc.
@@ -40,7 +40,7 @@ if [ ! -d "$BUNDLE_DIR" ]; then
   git clone --depth 1 "$REPO" /tmp/stack-hugo \
     && BUNDLE_DIR="/tmp/stack-hugo/skills-bundle" \
     && NMODE_DIR="/tmp/stack-hugo/9mode" \
-    && ok "Repo cloné (28 skills + scripts 9mode)." \
+    && ok "Repo cloné (27 skills + scripts 9mode)." \
     || die "Clonage sofalost/stack-hugo échoué (réseau ?)."
 fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
@@ -375,6 +375,28 @@ if command -v claude >/dev/null 2>&1; then
   HUD_JS='node "$(ls -d "$HOME"/.claude/plugins/cache/claude-hud/claude-hud/*/dist/index.js | sort -V | tail -1)"'
   json_set "$HOME/.claude/settings.json" statusLine.command "$HUD_JS"
   ok "claude-hud installé + statusLine configuré."
+fi
+
+# --- autres plugins Claude Code (même liste que sur ta machine) --------------
+# frontend-design : PAS installé en plugin — son skill est dans le bundle
+# (skills-bundle/frontend-design) et partagé avec les 5 autres agents.
+say "plugins Claude Code (obsidian, ui-ux-pro-max, superpowers)"
+if command -v claude >/dev/null 2>&1; then
+  claude plugin marketplace add kepano/obsidian-skills >/dev/null 2>&1 \
+    || warn "marketplace obsidian-skills : add KO"
+  claude plugin install obsidian@obsidian-skills >/dev/null 2>&1 \
+    || warn "plugin obsidian : install KO"
+
+  claude plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill >/dev/null 2>&1 \
+    || warn "marketplace ui-ux-pro-max-skill : add KO"
+  claude plugin install ui-ux-pro-max@ui-ux-pro-max-skill >/dev/null 2>&1 \
+    || warn "plugin ui-ux-pro-max : install KO"
+
+  claude plugin marketplace add anthropics/claude-plugins-official >/dev/null 2>&1 \
+    || warn "marketplace claude-plugins-official : add KO"
+  claude plugin install superpowers@claude-plugins-official >/dev/null 2>&1 \
+    || warn "plugin superpowers : install KO"
+  ok "plugins Claude Code installés (obsidian, ui-ux-pro-max, superpowers)."
 fi
 
 ok "Claude Code → 9router"
