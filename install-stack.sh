@@ -239,7 +239,7 @@ done
 # Combos pré-créés (noms seulement, modèles vides — le pote met les siens dans
 # le dashboard). La base SQLite est créée paresseusement : un GET /api/auth/status
 # suffit à la déclencher (sans tenter de login, donc sans risque de lockout).
-say "Pré-création des 13 combos (9classifier … 9sonnet) + scripts 9mode"
+say "Pré-création des 12 combos (9deepseek … 9sonnet) + scripts 9mode"
 mkdir -p "$HOME/.9mode"
 if [ -d "$NMODE_DIR" ] && [ -f "$NMODE_DIR/9auto.py" ]; then
   cp "$NMODE_DIR/9mode.py" "$NMODE_DIR/9auto.py" "$HOME/.9mode/" && ok "Scripts 9mode → ~/.9mode/"
@@ -250,7 +250,7 @@ curl -fsS --max-time 5 "$NR_URL/api/auth/status" >/dev/null 2>&1 || true
 for i in {1..15}; do docker exec 9router sh -c '[ -f /app/data/db/data.sqlite ]' 2>/dev/null && break; sleep 1; done
 SEED_JS="$(cat <<'EOSEED'
 const db=require("node:sqlite");const d=new db.DatabaseSync("/app/data/db/data.sqlite");
-const names=["9classifier","9deepseek","9fable","9gemini","9glm","9gpt","9haiku","9kimi","9minimax","9opus","9oxalpha","9qwen","9sonnet"];
+const names=["9deepseek","9fable","9gemini","9glm","9gpt","9haiku","9kimi","9minimax","9opus","9oxalpha","9qwen","9sonnet"];
 const now=new Date().toISOString();let n=0;
 for(const name of names){const r=d.prepare("INSERT OR IGNORE INTO combos (id,name,kind,models,createdAt,updatedAt) VALUES (?,?,?,?,?,?)").run(crypto.randomUUID(),name,null,"[]",now,now);n+=r.changes}
 console.log(n+" nouveaux, "+d.prepare("SELECT count(*) c FROM combos").get().c+" total");
@@ -351,7 +351,7 @@ json_set "$HOME/.claude/settings.json" env.ANTHROPIC_AUTH_TOKEN "$NR_KEY_PLACEHO
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_OPUS_MODEL 9opus
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_SONNET_MODEL 9haiku
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_HAIKU_MODEL 9haiku
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_SMALL_FAST_MODEL 9classifier
+json_set "$HOME/.claude/settings.json" env.ANTHROPIC_SMALL_FAST_MODEL 9haiku
 json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_CONTEXT_TOKENS 1000000
 json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_OUTPUT_TOKENS 128000
 json_set "$HOME/.claude/settings.json" model 9haiku
@@ -388,7 +388,7 @@ import json, os, sys
 key = sys.argv[1]
 p = os.path.expanduser("~/.openclaw/openclaw.json")
 d = json.load(open(p)) if os.path.exists(p) else {}
-combos = ["9glm","9sonnet","9opus","9haiku","9classifier","9deepseek","9fable",
+combos = ["9glm","9sonnet","9opus","9haiku","9deepseek","9fable",
           "9gemini","9gpt","9kimi","9minimax","9oxalpha","9qwen"]
 d["models"] = d.get("models", {})
 d["models"]["providers"] = d["models"].get("providers", {})
@@ -447,7 +447,7 @@ key = sys.argv[1]
 p = os.path.expanduser("~/.config/opencode/opencode.json")
 d = json.load(open(p)) if os.path.exists(p) else {}
 models = {}
-for c in ["9classifier","9deepseek","9fable","9gemini","9gpt","9haiku","9kimi",
+for c in ["9deepseek","9fable","9gemini","9gpt","9haiku","9kimi",
           "9minimax","9opus","9oxalpha","9qwen","9sonnet"]:
     models[c] = {"name": c}
 models["9glm"] = {"name": "9glm", "limit": {"context": 256000, "output": 128000}}
@@ -513,6 +513,17 @@ llm-pi-ai:
           maxTokens: 128000
 EODS
 ok "dsh → 9router"
+
+# Skills dans dsh : le profil web désactive le plugin skill-filesystem (celui
+# qui lit ~/.agents/skills). Un cordis.patch.yml pré-créé survit au scaffold
+# du profile et réactive le plugin → les 32 skills visibles aussi dans dsh web.
+mkdir -p "$HOME/.dsh/profiles/web"
+cat > "$HOME/.dsh/profiles/web/cordis.patch.yml" <<'EODP'
+# Skills du filesystem (~/.agents/skills) réactivés dans le profil web.
+- id: skill-filesystem
+  disabled: false
+EODP
+ok "dsh web : skill-filesystem réactivé (skills ~/.agents/skills)."
 
 # ============================================================================
 # 8. Clé API
