@@ -14,10 +14,22 @@ set -uo pipefail
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/skills-bundle"
 REPO="https://github.com/sofalost/stack-hugo.git"
 
+# Log complet de l'install (à envoyer à Hugo en cas de problème).
+LOG_FILE="$HOME/stack-hugo-install.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo ""
+echo "════════ install-stack.sh — $(date '+%Y-%m-%d %H:%M:%S') ════════"
+
+WARN_COUNT=0
 say()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✅ %s\033[0m\n' "$*"; }
-warn() { printf '\033[1;33m⚠️ %s\033[0m\n' "$*"; }
+warn() { WARN_COUNT=$((WARN_COUNT+1)); printf '\033[1;33m⚠️ %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m❌ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Ce script cible Ubuntu/Debian (apt-get) sous WSL2 — échec clair et tôt sinon.
+if ! command -v apt-get >/dev/null 2>&1; then
+  die "Script prévu pour Ubuntu/Debian (WSL2). OS détecté : $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo inconnu)."
+fi
 
 # Chaque section continue en cas d'échec non fatal, comme la vraie sofalost.
 # set -e est volontairement absent : on veut un installateur robuste, pas un
@@ -46,6 +58,9 @@ fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
 
 NR_URL="http://127.0.0.1:20128"
+# Version pinée pour les NOUVELLES installs (dernière vérifiée bonne, 2026-08-14).
+# Les conteneurs existants et sofalost restent sur :latest (chemin d'upgrade).
+NR_TAG="0.5.55"
 # Volume des données 9router (clés API, config) — le même pour tout le script,
 # que le conteneur existe déjà ou soit (re)créé : les données survivent toujours.
 NR_VOL="9router-data"
@@ -63,7 +78,7 @@ nr_backup() {
 }
 
 # Vrai si le volume 9router-data contient déjà des données (db sqlite présente).
-nr_vol_vide() { [ -z "$(docker run --rm -v "$NR_VOL":/app/data --entrypoint ls decolua/9router:latest -A /app/data/db 2>/dev/null)" ]; }
+nr_vol_vide() { [ -z "$(docker run --rm -v "$NR_VOL":/app/data --entrypoint ls decolua/9router:"$NR_TAG" -A /app/data/db 2>/dev/null)" ]; }
 
 # ============================================================================
 # 0. Docker Desktop
@@ -213,14 +228,14 @@ else
   if nr_vol_vide && [ -f "$HOME/.9router-backup/db/data.sqlite" ]; then
     say "Volume vide + backup détecté → restauration des données..."
     docker run --rm -v "$NR_VOL":/app/data -v "$HOME/.9router-backup":/backup \
-      --entrypoint sh decolua/9router:latest \
+      --entrypoint sh decolua/9router:"$NR_TAG" \
       -c 'cp -a /backup/. /app/data/ && chown -R node:node /app/data' \
       && ok "Données restaurées dans le volume $NR_VOL." \
       || warn "Restauration KO — ancien conteneur perdu, nouveau départ."
   fi
-  docker pull decolua/9router:latest \
-    && docker run -d --name 9router "${NR_RUN_ARGS[@]}" decolua/9router:latest >/dev/null \
-    && ok "Conteneur 9router créé (données sur volume 9router-data)." \
+  docker pull decolua/9router:"$NR_TAG" \
+    && docker run -d --name 9router "${NR_RUN_ARGS[@]}" decolua/9router:"$NR_TAG" >/dev/null \
+    && ok "Conteneur 9router créé (image $NR_TAG, données sur volume 9router-data)." \
     || die "Création conteneur 9router échouée."
 fi
 
@@ -563,21 +578,36 @@ ok "dsh web : skill-filesystem réactivé (skills ~/.agents/skills)."
 # 8. Clé API
 # ============================================================================
 say "Étape 8/9 — Clé API 9router"
-echo
-echo "════════════════════════════════════════════════════════════════"
-echo "  Récupère ta clé API sur l'interface 9router (ouverte dans ton"
-echo "  navigateur à l'étape 5) : Dashboard → Keys → crée une clé sk-..."
-echo "════════════════════════════════════════════════════════════════"
-NR_KEY=""
-while [ -z "$NR_KEY" ]; do
-  read -r -p "Colle ta clé API 9router (sk-...) : " NR_KEY
-  [ -z "$NR_KEY" ] && warn "Clé vide — réessaie."
-done
 
-if curl -fsS --max-time 5 -H "Authorization: Bearer $NR_KEY" "$NR_URL/v1/models" >/dev/null 2>&1; then
-  ok "Clé validée contre 9router."
+# Reprise après échec : si une clé valide est déjà en place (bashrc + 9router
+# l'accepte), on saute la saisie — le script est relançable sans tout refaire.
+EXISTING_KEY="$(grep -oP '^CODEROUTER_API_KEY="\K[^"]+' "$HOME/.bashrc" 2>/dev/null | head -1)"
+if [ -n "$EXISTING_KEY" ] \
+   && curl -fsS --max-time 5 -H "Authorization: Bearer $EXISTING_KEY" "$NR_URL/v1/models" >/dev/null 2>&1; then
+  NR_KEY="$EXISTING_KEY"
+  ok "Clé API déjà présente et valide — saisie sautée."
 else
-  warn "Clé non validée par 9router — inscrite quand même (vérifie Dashboard → Keys)."
+  echo
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  Récupère ta clé API sur l'interface 9router (ouverte dans ton"
+  echo "  navigateur à l'étape 5) : Dashboard → Keys → crée une clé sk-..."
+  echo "════════════════════════════════════════════════════════════════"
+  NR_KEY=""
+  while [ -z "$NR_KEY" ]; do
+    read -r -p "Colle ta clé API 9router (sk-...) : " NR_KEY
+    if [ -z "$NR_KEY" ]; then
+      warn "Clé vide — réessaie."
+    elif ! printf '%s' "$NR_KEY" | grep -qE '^sk-[A-Za-z0-9_-]{8,}$'; then
+      warn "Format inattendu (attendu : sk-... ) — réessaie."
+      NR_KEY=""
+    fi
+  done
+
+  if curl -fsS --max-time 5 -H "Authorization: Bearer $NR_KEY" "$NR_URL/v1/models" >/dev/null 2>&1; then
+    ok "Clé validée contre 9router."
+  else
+    warn "Clé non validée par 9router — inscrite quand même (vérifie Dashboard → Keys)."
+  fi
 fi
 
 sed -i "s|__9ROUTER_KEY__|$NR_KEY|g" \
@@ -786,8 +816,31 @@ EOSOF
 ok "Fonction sofalost ajoutée à ~/.bashrc."
 
 # ============================================================================
-# Fin
+# Fin — résumé vérifiable
 # ============================================================================
+echo
+echo "════════════════════ RÉSUMÉ DE L'INSTALLATION ════════════════════"
+for app in claude openclaw codex opencode hermes dsh; do
+  if command -v "$app" >/dev/null 2>&1; then
+    printf '  ✅ %-10s installé\n' "$app"
+  else
+    printf '  ❌ %-10s ABSENT\n' "$app"
+  fi
+done
+if curl -fsS --max-time 3 "$NR_URL/api/health" >/dev/null 2>&1; then
+  printf '  ✅ %-10s répond sur %s\n' "9router" "$NR_URL"
+else
+  printf '  ❌ %-10s NE RÉPOND PAS\n' "9router"
+fi
+printf '  📦 Skills : %s dans ~/.claude/skills\n' "$(ls "$HOME/.claude/skills" 2>/dev/null | wc -l)"
+echo "──────────────────────────────────────────────────────────────────"
+if [ "$WARN_COUNT" -gt 0 ]; then
+  warn "$WARN_COUNT avertissement(s) pendant l'install — voir le log : $LOG_FILE"
+else
+  ok "Aucun avertissement."
+fi
+echo "  Log complet : $LOG_FILE"
+echo "══════════════════════════════════════════════════════════════════"
 echo
 ok "Installation terminée !"
 echo
