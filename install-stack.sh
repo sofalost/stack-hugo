@@ -20,6 +20,9 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo ""
 echo "════════ install-stack.sh — $(date '+%Y-%m-%d %H:%M:%S') ════════"
 
+# Même en cas d'échec (die), le pote sait où est le log à envoyer.
+trap '[ $? -ne 0 ] && printf "\033[1;33m→ Log complet : %s\033[0m\n" "$LOG_FILE"' EXIT
+
 WARN_COUNT=0
 say()  { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✅ %s\033[0m\n' "$*"; }
