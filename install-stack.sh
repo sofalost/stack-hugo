@@ -233,6 +233,24 @@ for i in {1..30}; do
 done
 [ "$up" = 1 ] && ok "9router répond sur $NR_URL" || die "9router ne répond pas (docker logs --tail 40 9router)."
 
+# Combos pré-créés (noms seulement, modèles vides — le pote met les siens dans
+# le dashboard). La base SQLite est créée paresseusement : un GET /api/auth/status
+# suffit à la déclencher (sans tenter de login, donc sans risque de lockout).
+say "Pré-création des 13 combos (9classifier … 9sonnet)"
+curl -fsS --max-time 5 "$NR_URL/api/auth/status" >/dev/null 2>&1 || true
+for i in {1..15}; do docker exec 9router sh -c '[ -f /app/data/db/data.sqlite ]' 2>/dev/null && break; sleep 1; done
+SEED_JS="$(cat <<'EOSEED'
+const db=require("node:sqlite");const d=new db.DatabaseSync("/app/data/db/data.sqlite");
+const names=["9classifier","9deepseek","9fable","9gemini","9glm","9gpt","9haiku","9kimi","9minimax","9opus","9oxalpha","9qwen","9sonnet"];
+const now=new Date().toISOString();let n=0;
+for(const name of names){const r=d.prepare("INSERT OR IGNORE INTO combos (id,name,kind,models,createdAt,updatedAt) VALUES (?,?,?,?,?,?)").run(crypto.randomUUID(),name,null,"[]",now,now);n+=r.changes}
+console.log(n+" nouveaux, "+d.prepare("SELECT count(*) c FROM combos").get().c+" total");
+EOSEED
+)"
+docker exec -u node 9router node -e "$SEED_JS" 2>/dev/null \
+  && ok "Combos prêts (idempotent : les combos existants sont conservés)." \
+  || warn "Seed combos KO — crée-les à la main dans le dashboard."
+
 say "Ouverture du navigateur sur $NR_URL"
 if command -v wslview >/dev/null 2>&1; then
   wslview "$NR_URL" >/dev/null 2>&1 || true
