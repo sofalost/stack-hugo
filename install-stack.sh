@@ -39,7 +39,8 @@ if [ ! -d "$BUNDLE_DIR" ]; then
   rm -rf /tmp/stack-hugo
   git clone --depth 1 "$REPO" /tmp/stack-hugo \
     && BUNDLE_DIR="/tmp/stack-hugo/skills-bundle" \
-    && ok "Repo cloné (28 skills)." \
+    && NMODE_DIR="/tmp/stack-hugo/9mode" \
+    && ok "Repo cloné (28 skills + scripts 9mode)." \
     || die "Clonage sofalost/stack-hugo échoué (réseau ?)."
 fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
@@ -49,6 +50,8 @@ NR_URL="http://127.0.0.1:20128"
 # que le conteneur existe déjà ou soit (re)créé : les données survivent toujours.
 NR_VOL="9router-data"
 NR_RUN_ARGS=(--restart always --network ai-network -p 20128:20128 -v "$NR_VOL":/app/data)
+# Dossier 9mode (9mode.py + 9auto.py) : à côté du script ou cloné avec le repo.
+NMODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/9mode"
 
 # Sauvegarde les données de /app/data du conteneur vers ~/.9router-backup/
 # (couvre le cas : ancien conteneur sans volume → données dans sa couche, que
@@ -236,7 +239,13 @@ done
 # Combos pré-créés (noms seulement, modèles vides — le pote met les siens dans
 # le dashboard). La base SQLite est créée paresseusement : un GET /api/auth/status
 # suffit à la déclencher (sans tenter de login, donc sans risque de lockout).
-say "Pré-création des 13 combos (9classifier … 9sonnet)"
+say "Pré-création des 13 combos (9classifier … 9sonnet) + scripts 9mode"
+mkdir -p "$HOME/.9mode"
+if [ -d "$NMODE_DIR" ] && [ -f "$NMODE_DIR/9auto.py" ]; then
+  cp "$NMODE_DIR/9mode.py" "$NMODE_DIR/9auto.py" "$HOME/.9mode/" && ok "Scripts 9mode → ~/.9mode/"
+else
+  warn "9mode/ introuvable — skill 9mode-settings ne fonctionnera pas."
+fi
 curl -fsS --max-time 5 "$NR_URL/api/auth/status" >/dev/null 2>&1 || true
 for i in {1..15}; do docker exec 9router sh -c '[ -f /app/data/db/data.sqlite ]' 2>/dev/null && break; sleep 1; done
 SEED_JS="$(cat <<'EOSEED'
@@ -316,6 +325,7 @@ fi
 # ============================================================================
 say "Étape 7/9 — Configuration des 6 applis → 9router"
 NR_KEY_PLACEHOLDER="__9ROUTER_KEY__"
+
 
 # --- util : écrit une valeur dans un JSON (chemin pointé) -------------------
 json_set() {
