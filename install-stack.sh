@@ -3,7 +3,7 @@
 # Stack IA de Hugo — installateur pour potes (WSL2 Ubuntu)
 # Usage : bash <(curl -fsSL https://raw.githubusercontent.com/sofalost/stack-hugo/master/install-stack.sh)
 # (le script se suffit à lui-même : il clone le repo public sofalost/stack-hugo
-# pour récupérer les 27 skills si besoin)
+# pour récupérer les 33 skills si besoin)
 # Ce que fait le script : 1) installe tout (6 applis, skills, conteneur 9router)
 # 2) configure les 6 applis sur 9router 3) à la fin, demande la clé API et
 # termine la config 4) ajoute la fonction `sofalost` dans ~/.bashrc.
@@ -40,7 +40,7 @@ if [ ! -d "$BUNDLE_DIR" ]; then
   git clone --depth 1 "$REPO" /tmp/stack-hugo \
     && BUNDLE_DIR="/tmp/stack-hugo/skills-bundle" \
     && NMODE_DIR="/tmp/stack-hugo/9mode" \
-    && ok "Repo cloné (27 skills + scripts 9mode)." \
+    && ok "Repo cloné (33 skills + scripts 9mode)." \
     || die "Clonage sofalost/stack-hugo échoué (réseau ?)."
 fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
@@ -298,7 +298,19 @@ SKILL_DESTS=(
 )
 for dest in "${SKILL_DESTS[@]}"; do
   mkdir -p "$dest"
-  rsync -a "$BUNDLE_DIR/" "$dest/" || warn "rsync bundle → $dest KO"
+  n=0
+  for d in "$BUNDLE_DIR"/*/; do
+    name="$(basename "$d")"
+    # Skills extraits des plugins Claude Code : pas déployés dans ~/.claude/skills
+    # (Claude Code les a déjà via ses plugins — doublon inutile).
+    if [ "$dest" = "$HOME/.claude/skills" ]; then
+      case "$name" in
+        frontend-design|ui-ux-pro-max|defuddle|json-canvas|obsidian-bases|obsidian-cli|obsidian-markdown) continue ;;
+      esac
+    fi
+    rsync -a --delete "$d" "$dest/$name" && n=$((n+1))
+  done
+  ok "$n skills → $dest"
   for skill in 9router 9router-chat 9router-image 9router-tts; do
     [ -f /tmp/9sk-$skill/SKILL.md ] && mkdir -p "$dest/$skill" && cp /tmp/9sk-$skill/SKILL.md "$dest/$skill/SKILL.md"
   done
