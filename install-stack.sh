@@ -45,6 +45,22 @@ fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
 
 NR_URL="http://127.0.0.1:20128"
+# Volume des données 9router (clés API, config) — le même pour tout le script,
+# que le conteneur existe déjà ou soit (re)créé : les données survivent toujours.
+NR_VOL="9router-data"
+NR_RUN_ARGS=(--restart always --network ai-network -p 20128:20128 -v "$NR_VOL":/app/data)
+
+# Sauvegarde les données de /app/data du conteneur vers ~/.9router-backup/
+# (couvre le cas : ancien conteneur sans volume → données dans sa couche, que
+# docker rm détruirait). Idempotent : écrase la sauvegarde précédente.
+nr_backup() {
+  docker exec 9router tar -C /app/data -cf - . 2>/dev/null | { mkdir -p "$HOME/.9router-backup"; tar -C "$HOME/.9router-backup" -xf -; } \
+    && ok "Backup 9router → ~/.9router-backup ($(du -sh "$HOME/.9router-backup" 2>/dev/null | cut -f1))" \
+    || warn "Backup 9router KO (conteneur démarré ?)."
+}
+
+# Vrai si le volume 9router-data contient déjà des données (db sqlite présente).
+nr_vol_vide() { [ -z "$(docker run --rm -v "$NR_VOL":/app/data --entrypoint ls decolua/9router:latest -A /app/data/db 2>/dev/null)" ]; }
 
 # ============================================================================
 # 0. Docker Desktop
@@ -86,8 +102,17 @@ sudo -n true 2>/dev/null || warn "sudo -n KO — vérifie /etc/sudoers.d/$USER."
 # ============================================================================
 say "Étape 2/9 — Dépendances système"
 sudo apt-get update -y
+# gh (CLI GitHub) — repo officiel car absent des dépôts Ubuntu 20.04
+if ! command -v gh >/dev/null 2>&1; then
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+  sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  sudo apt-get update -y >/dev/null 2>&1
+fi
 sudo apt-get install -y curl git rsync python3 python3-pip build-essential \
-  ca-certificates gnupg unzip jq ripgrep
+  ca-certificates gnupg unzip jq ripgrep gh
 if ! command -v node >/dev/null 2>&1; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
   sudo apt-get install -y nodejs
@@ -157,6 +182,7 @@ docker network create ai-network >/dev/null 2>&1
 
 if docker ps -a --format '{{.Names}}' | grep -qx '9router'; then
   ok "Conteneur 9router déjà présent."
+  nr_backup
   # Mise à jour de l'image même si le conteneur existe (données préservées :
   # elles vivent sur le volume 9router-data, pas dans le conteneur).
   say "Update image 9router..."
@@ -168,10 +194,9 @@ if docker ps -a --format '{{.Names}}' | grep -qx '9router'; then
       docker tag decolua/9router:latest decolua/9router:stack-rollback >/dev/null 2>&1
       docker stop 9router >/dev/null 2>&1
       docker rm 9router >/dev/null 2>&1
-      docker run -d --name 9router --restart always --network ai-network \
-        -p 20128:20128 -v 9router-data:/app/data decolua/9router:latest >/dev/null \
+      docker run -d --name 9router "${NR_RUN_ARGS[@]}" decolua/9router:latest >/dev/null \
         && ok "9router recréé sur la nouvelle image (données préservées)." \
-        || die "Recréation 9router échouée — rollback : docker run -d --name 9router --restart always --network ai-network -p 20128:20128 -v 9router-data:/app/data decolua/9router:stack-rollback"
+        || die "Recréation 9router échouée — rollback : docker run -d --name 9router ${NR_RUN_ARGS[*]} decolua/9router:stack-rollback"
     else
       ok "Image 9router déjà à jour."
     fi
@@ -180,9 +205,18 @@ if docker ps -a --format '{{.Names}}' | grep -qx '9router'; then
   fi
 else
   docker volume create 9router-data >/dev/null 2>&1
+  # Restauration : si le volume est vide mais qu'un backup existe (ancien
+  # conteneur créé sans volume → données perdues par docker rm), on les remet.
+  if nr_vol_vide && [ -f "$HOME/.9router-backup/db/data.sqlite" ]; then
+    say "Volume vide + backup détecté → restauration des données..."
+    docker run --rm -v "$NR_VOL":/app/data -v "$HOME/.9router-backup":/backup \
+      --entrypoint sh decolua/9router:latest \
+      -c 'cp -a /backup/. /app/data/ && chown -R node:node /app/data' \
+      && ok "Données restaurées dans le volume $NR_VOL." \
+      || warn "Restauration KO — ancien conteneur perdu, nouveau départ."
+  fi
   docker pull decolua/9router:latest \
-    && docker run -d --name 9router --restart always --network ai-network \
-         -p 20128:20128 -v 9router-data:/app/data decolua/9router:latest >/dev/null \
+    && docker run -d --name 9router "${NR_RUN_ARGS[@]}" decolua/9router:latest >/dev/null \
     && ok "Conteneur 9router créé (données sur volume 9router-data)." \
     || die "Création conteneur 9router échouée."
 fi
@@ -287,12 +321,12 @@ mkdir -p "$HOME/.claude"
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_BASE_URL "$NR_URL"
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_AUTH_TOKEN "$NR_KEY_PLACEHOLDER"
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_OPUS_MODEL 9opus
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_SONNET_MODEL 9sonnet
+json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_SONNET_MODEL 9haiku
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_HAIKU_MODEL 9haiku
 json_set "$HOME/.claude/settings.json" env.ANTHROPIC_SMALL_FAST_MODEL 9classifier
 json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_CONTEXT_TOKENS 1000000
 json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_OUTPUT_TOKENS 128000
-json_set "$HOME/.claude/settings.json" model 9sonnet
+json_set "$HOME/.claude/settings.json" model 9haiku
 json_set "$HOME/.claude/settings.json" hasCompletedOnboarding true
 # Autoupdate natif (le reste : ~/.claude.json, pas settings.json)
 if [ -f "$HOME/.claude.json" ]; then
@@ -338,9 +372,9 @@ d["models"]["providers"]["9router"] = {
 }
 d["agents"] = d.get("agents", {})
 d["agents"]["defaults"] = d["agents"].get("defaults", {})
-d["agents"]["defaults"]["model"] = {"primary": "9router/9glm"}
+d["agents"]["defaults"]["model"] = {"primary": "9router/9haiku"}
 d["agents"]["defaults"]["models"] = d["agents"]["defaults"].get("models") or {}
-d["agents"]["defaults"]["models"]["9router/9glm"] = {}
+d["agents"]["defaults"]["models"]["9router/9haiku"] = {"contextWindow": 256000, "maxTokens": 128000}
 d["mcp"] = d.get("mcp", {})
 d["mcp"]["servers"] = d["mcp"].get("servers", {})
 d["mcp"]["servers"]["ScraplingServer"] = {
@@ -359,7 +393,7 @@ mkdir -p "$HOME/.codex"
 [ -f "$HOME/.codex/config.toml" ] && cp "$HOME/.codex/config.toml" "$HOME/.codex/config.toml.bak-stack"
 cat > "$HOME/.codex/config.toml" <<'EOCX'
 # Codex CLI — 9router (généré par install-stack.sh)
-model = "9kimi"
+model = "9haiku"
 model_provider = "9router"
 model_context_window = 256000
 model_max_output_tokens = 128000
@@ -389,13 +423,14 @@ for c in ["9classifier","9deepseek","9fable","9gemini","9gpt","9haiku","9kimi",
           "9minimax","9opus","9oxalpha","9qwen","9sonnet"]:
     models[c] = {"name": c}
 models["9glm"] = {"name": "9glm", "limit": {"context": 256000, "output": 128000}}
+models["9haiku"] = {"name": "9haiku", "limit": {"context": 256000, "output": 128000}}
 d["provider"] = {"9router": {
     "npm": "@ai-sdk/openai-compatible",
     "name": "9router",
     "options": {"baseURL": "http://127.0.0.1:20128/v1", "apiKey": key},
     "models": models,
 }}
-d["model"] = "9router/9glm"
+d["model"] = "9router/9haiku"
 d["autoupdate"] = True
 d["mcp"] = {
     "ScraplingServer": {
@@ -415,10 +450,10 @@ ok "OpenCode → 9router"
 if command -v hermes >/dev/null 2>&1; then
   hermes config set model.provider custom >/dev/null 2>&1
   hermes config set model.base_url "$NR_URL/v1" >/dev/null 2>&1
-  hermes config set model.default 9glm >/dev/null 2>&1
+  hermes config set model.default 9haiku >/dev/null 2>&1
   hermes config set model.api_key "$NR_KEY_PLACEHOLDER" >/dev/null 2>&1
-  hermes config set model_overrides.custom.9glm.context_window 256000 --force >/dev/null 2>&1
-  hermes config set model_overrides.custom.9glm.max_output_tokens 128000 --force >/dev/null 2>&1
+  hermes config set model_overrides.custom.9haiku.context_window 256000 --force >/dev/null 2>&1
+  hermes config set model_overrides.custom.9haiku.max_output_tokens 128000 --force >/dev/null 2>&1
   # MCP Scrapling (chemin absolu du binaire) — printf Y : hermes demande
   # confirmation interactive "Enable all tools?" qui bloquerait le script.
   printf 'Y\n' | hermes mcp add ScraplingServer --command "$HOME/.local/bin/scrapling-mcp" >/dev/null 2>&1 \
@@ -432,7 +467,7 @@ cat > "$HOME/.dsh/settings.yaml" <<'EODS'
 # dsh — 9router (régénéré par sofalost)
 agent-default-model:
   provider: 9router
-  model: 9glm
+  model: 9haiku
 llm-pi-ai:
   providers:
     9router:
@@ -444,8 +479,8 @@ llm-pi-ai:
         supportsDeveloperRole: false
         maxTokensField: max_tokens
       models:
-        - id: 9glm
-          name: 9glm (GLM via 9router)
+        - id: 9haiku
+          name: 9haiku (via 9router)
           contextWindow: 256000
           maxTokens: 128000
 EODS
@@ -547,7 +582,7 @@ sofalost() {
 
   # ─── [3/6] Updates des 6 agents ───
   echo
-  echo "🤖 [3/6] Updates des agents..."
+  echo "🤖 [3/6] Updates des agents... (6 applis → 9haiku 256K)"
   command -v claude >/dev/null 2>&1 && { claude update || echo "⚠️ claude update KO, on continue."; }
   command -v openclaw >/dev/null 2>&1 && { openclaw update --yes --no-restart || echo "⚠️ openclaw update KO, on continue."; }
   command -v codex >/dev/null 2>&1 && { codex update || echo "⚠️ codex update KO, on continue."; }
@@ -555,6 +590,7 @@ sofalost() {
   command -v hermes >/dev/null 2>&1 \
     && { hermes update --yes || { sleep 10; hermes update --yes; } || echo "⚠️ hermes update KO, on continue."; }
   command -v dsh >/dev/null 2>&1 && { npm install -g @deepseek-ai/dsh >/dev/null 2>&1 || echo "⚠️ dsh update KO, on continue."; }
+  command -v gh >/dev/null 2>&1 || echo "ℹ️ gh absent — installe-le : sudo apt install gh"
   echo "✅ Agents à jour."
 
   # ─── [4/6] Skills ───
@@ -654,12 +690,12 @@ sofalost() {
   # ─── [6/6] Menu ───
   echo
   echo "🚀 Quel agent veux-tu lancer ?"
-  echo "   1) claude   (Claude Code, 9sonnet)"
-  echo "   2) hermes   (Hermes Agent, 9glm 256K)"
-  echo "   3) opencode (OpenCode, 9glm 256K)"
-  echo "   4) dsh      (DeepSeek Harness, 9glm 256K)"
-  echo "   5) codex    (Codex CLI, 9kimi)"
-  echo "   6) openclaw (OpenClaw, 9glm 256K)"
+  echo "   1) claude   (Claude Code, 9haiku 256K)"
+  echo "   2) hermes   (Hermes Agent, 9haiku 256K)"
+  echo "   3) opencode (OpenCode, 9haiku 256K)"
+  echo "   4) dsh      (DeepSeek Harness, 9haiku 256K)"
+  echo "   5) codex    (Codex CLI, 9haiku 256K)"
+  echo "   6) openclaw (OpenClaw, 9haiku 256K)"
   local choix
   read -r -p "Choix [1-6] : " choix
   case "$choix" in
