@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================================
 # Stack IA de Hugo — installateur pour potes (WSL2 Ubuntu)
-# Usage : ./install-stack.sh   (le script se suffit à lui-même : il clone le
-# repo privé sofalost/stack-hugo pour récupérer les 28 skills si besoin)
+# Usage : bash <(curl -fsSL https://raw.githubusercontent.com/sofalost/stack-hugo/master/install-stack.sh)
+# (le script se suffit à lui-même : il clone le repo public sofalost/stack-hugo
+# pour récupérer les 28 skills si besoin)
 # Ce que fait le script : 1) installe tout (6 applis, skills, conteneur 9router)
 # 2) configure les 6 applis sur 9router 3) à la fin, demande la clé API et
 # termine la config 4) ajoute la fonction `sofalost` dans ~/.bashrc.
-# Prérequis : Windows + Docker Desktop avec intégration WSL activée, et une
-# invitation GitHub acceptée au repo privé sofalost/stack-hugo.
+# Prérequis : Windows + Docker Desktop avec intégration WSL activée.
 # ============================================================================
 set -uo pipefail
 
@@ -24,41 +24,23 @@ die()  { printf '\033[1;31m❌ %s\033[0m\n' "$*" >&2; exit 1; }
 # installateur qui meurt à la première commande inconnue.
 
 # ============================================================================
-# Pré-requis 1/2 — Skills : bundle local ou clonage du repo privé
+# Pré-requis — Skills : bundle local ou clonage du repo (public, sans gh)
 # ============================================================================
 if [ ! -d "$BUNDLE_DIR" ]; then
-  say "Skills : clonage du repo privé sofalost/stack-hugo"
-  # gh (CLI GitHub) — install si absent
-  if ! command -v gh >/dev/null 2>&1; then
-    if ! sudo -n true 2>/dev/null; then
-      echo "Entre ton mot de passe sudo pour installer la CLI GitHub (gh) :"
-      sudo -v || die "sudo refusé."
-    fi
-    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-    sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  # Dépendances minimales AVANT tout usage de curl/git : sur un Ubuntu clean,
+  # ils sont absents au démarrage du script (installés à l'étape 2, trop tard).
+  if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+    echo "Entre ton mot de passe sudo pour installer curl + git :"
+    sudo -v || die "sudo refusé."
     sudo apt-get update -y >/dev/null 2>&1
-    sudo apt-get install -y gh >/dev/null 2>&1 || warn "gh : install KO"
+    sudo apt-get install -y curl git >/dev/null 2>&1 || die "Impossible d'installer curl/git (requis pour cloner le repo)."
   fi
-  # Auth GitHub (le pote doit avoir accepté l'invitation collaborateur)
-  if command -v gh >/dev/null 2>&1; then
-    if ! gh auth status >/dev/null 2>&1; then
-      echo
-      echo "Connexion GitHub requise (le repo des skills est privé)."
-      echo "Ton compte GitHub doit avoir accepté l'invitation au repo"
-      echo "sofalost/stack-hugo (vérifie tes mails GitHub)."
-      gh auth login -w -g sofalost/stack-hugo || die "gh auth login échoué."
-    fi
-    rm -rf /tmp/stack-hugo
-    gh repo clone sofalost/stack-hugo /tmp/stack-hugo -- --depth 1 \
-      && BUNDLE_DIR="/tmp/stack-hugo/skills-bundle" \
-      && ok "Repo cloné (28 skills)." \
-      || die "Clonage sofalost/stack-hugo échoué (accès accordé ?)."
-  else
-    die "gh indisponible — mets le dossier skills-bundle/ à côté du script."
-  fi
+  say "Skills : clonage du repo sofalost/stack-hugo (public, sans auth)"
+  rm -rf /tmp/stack-hugo
+  git clone --depth 1 "$REPO" /tmp/stack-hugo \
+    && BUNDLE_DIR="/tmp/stack-hugo/skills-bundle" \
+    && ok "Repo cloné (28 skills)." \
+    || die "Clonage sofalost/stack-hugo échoué (réseau ?)."
 fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
 
