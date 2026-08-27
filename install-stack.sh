@@ -651,98 +651,237 @@ cat >> "$BRC" <<'EOSOF'
 # >>> sofalost (stack-hugo) >>>
 # Full update Ubuntu + 6 agents + skills + image Docker 9router (données
 # préservées) + menu. sudo NOPASSWD : /etc/sudoers.d/$USER. Usage : sofalost.
+_sofalost_mirror_skills() {
+  local dest="$1"
+  [ -d "$HOME/.claude/skills" ] || return 1
+  command -v rsync >/dev/null 2>&1 || return 1
+  mkdir -p "$dest"
+  rsync -a --delete "$HOME/.claude/skills/" "$dest/"
+}
+
+_sofalost_wait_health() {
+  local url="$1" tries="${2:-20}" i
+  for ((i = 0; i < tries; i++)); do
+    curl -fsS --max-time 2 "$url" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
 sofalost() {
+  # Refonte 2026-08-20, ajustée 2026-08-22/23 puis 2026-08-25, combos retirés
+  # 2026-08-27 (sauf classifier) : sofalost n'est plus un gestionnaire de stack
+  # (ollama abandonné ici). C'est un launcher multi-agents : full update Linux
+  # + des agents (claude, hermes, openclaw, opencode, codex, dsh) + skills/plugins
+  # + image Docker 9router (si ça ne menace pas les données) + classifier Claude
+  # Code fixé sur 9haiku, puis menu de lancement. Le baseline 9router
+  # (RTK/Caveman/Ponytail) et les autres combos ne sont plus touchés ici.
   if [ $# -gt 0 ]; then
-    echo "Usage : sofalost (sans option)."
+    echo "sofalost ne prend plus d'option (plus de --fast) : usage \`sofalost\`."
     return 2
   fi
+
   local health_url="http://127.0.0.1:20128/api/health"
 
-  # ─── [1/6] Pré-check réseau ───
-  echo "🌐 [1/6] Vérification réseau..."
+  # ─── Pré-check réseau (cf commentaire historique : deux pannes distinctes) ───
+  echo "🌐 [1/8] Vérification réseau..."
   if [ -z "$(ip route show default 2>/dev/null)" ]; then
-    echo "❌ Réseau WSL mort — fix (PowerShell) : wsl --shutdown puis relance sofalost."
+    echo "❌ Réseau WSL mort : aucune route par défaut (souvent networkingMode=mirrored décroché)."
+    echo "   Fix (PowerShell) : wsl --shutdown, puis relance sofalost."
     return 1
   fi
   if ! getent hosts github.com >/dev/null 2>&1; then
-    echo "⚠️ DNS KO — réparation resolv.conf..."
+    echo "⚠️ Routes OK mais résolution DNS KO — réparation de resolv.conf..."
+    if ! sudo -n true 2>/dev/null; then
+      echo "❌ sudo nécessite un mot de passe. Lance d'abord : sudo -v   puis relance sofalost."
+      return 1
+    fi
     printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' | sudo tee /etc/resolv.conf >/dev/null 2>&1
     sleep 1
-    getent hosts github.com >/dev/null 2>&1 || { echo "❌ DNS toujours cassé : wsl --shutdown."; return 1; }
+    getent hosts github.com >/dev/null 2>&1 || { echo "❌ DNS toujours cassé. Essaie : wsl --shutdown."; return 1; }
   fi
   echo "✅ Réseau OK."
 
-  # ─── [2/6] Ubuntu full update (sudo sans mot de passe) ───
   echo
-  echo "🔄 [2/6] Mise à jour Ubuntu..."
-  sudo apt update || { echo "❌ apt update KO."; return 1; }
+  echo "🔄 [2/8] Mise à jour Ubuntu (full-upgrade)..."
+  if ! sudo apt update; then
+    echo "❌ Échec de apt update."
+    return 1
+  fi
   local upgrade_log
   upgrade_log=$(mktemp)
-  sudo apt full-upgrade -y | tee "$upgrade_log" >/dev/null
-  local rc=${PIPESTATUS[0]}
-  if [ "$rc" -ne 0 ]; then echo "❌ full-upgrade KO."; rm -f "$upgrade_log"; return 1; fi
-  grep -qiE 'linux-image-[0-9]' "$upgrade_log" && echo "⚠️ Kernel WSL mis à jour — wsl --shutdown pour l'appliquer."
+  sudo apt full-upgrade -y | tee "$upgrade_log"
+  local upgrade_rc=${PIPESTATUS[0]}
+  if [ "$upgrade_rc" -ne 0 ]; then
+    echo "❌ Échec de full-upgrade Ubuntu."
+    rm -f "$upgrade_log"
+    return 1
+  fi
+  # Le kernel WSL ne prend effet qu'après un redémarrage complet de la VM
+  # (wsl --shutdown), pas juste ce shell — sinon la mise à jour reste inerte.
+  if grep -qiE 'linux-image-[0-9]' "$upgrade_log"; then
+    echo "⚠️ Kernel WSL mis à jour — redémarre la VM pour l'appliquer : wsl --shutdown (PowerShell), puis relance sofalost."
+  fi
   rm -f "$upgrade_log"
   sudo apt autoremove -y
-  echo "✅ Ubuntu à jour."
 
-  # ─── [3/6] Updates des 6 agents ───
   echo
-  echo "🤖 [3/6] Updates des agents... (6 applis → 9haiku 256K)"
-  command -v claude >/dev/null 2>&1 && { claude update || echo "⚠️ claude update KO, on continue."; }
-  command -v openclaw >/dev/null 2>&1 && { openclaw update --yes --no-restart || echo "⚠️ openclaw update KO, on continue."; }
-  command -v codex >/dev/null 2>&1 && { codex update || echo "⚠️ codex update KO, on continue."; }
-  command -v opencode >/dev/null 2>&1 && { opencode upgrade || echo "⚠️ opencode upgrade KO, on continue."; }
-  command -v hermes >/dev/null 2>&1 \
-    && { hermes update --yes || { sleep 10; hermes update --yes; } || echo "⚠️ hermes update KO, on continue."; }
-  command -v dsh >/dev/null 2>&1 && { npm install -g @deepseek-ai/dsh >/dev/null 2>&1 || echo "⚠️ dsh update KO, on continue."; }
-  command -v gh >/dev/null 2>&1 || echo "ℹ️ gh absent — installe-le : sudo apt install gh"
-  echo "✅ Agents à jour."
+  echo "🤖 [3/8] Mise à jour Claude Code..."
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "❌ Claude Code introuvable — installation attendue au préalable, sofalost ne l'installe plus."
+    return 1
+  fi
+  claude update || echo "⚠️ Update Claude Code échouée, on continue."
 
-  # ─── [4/6] Skills ───
   echo
-  echo "🧩 [4/6] Skills..."
+  echo "🧩 [4/8] Mise à jour plugins + skills Claude Code..."
+  if [ -x "$HOME/.claude/scripts/update-toolkit.sh" ]; then
+    "$HOME/.claude/scripts/update-toolkit.sh" || echo "⚠️ Update toolkit (plugins/skills) échouée, on continue."
+  else
+    echo "⚠️ ~/.claude/scripts/update-toolkit.sh introuvable — étape sautée."
+  fi
+
+  echo
+  echo "🧠 [5/8] Hermes Mise à jour via hermes update (CLI officielle) + skills..."
+  if command -v hermes >/dev/null 2>&1; then
+    # Retry 1x après 10 s : le git fetch d'update peut se faire couper par un
+    # HTTP 429 GitHub (gros rattrapage de commits) — le 2e essai repart du
+    # pack déjà partiellement téléchargé et passe généralement.
+    hermes update --yes >/dev/null 2>&1 \
+      || { sleep 10; hermes update --yes >/dev/null 2>&1; } \
+      && echo "✅ Hermes à jour ($(hermes --version 2>/dev/null | head -1))." \
+      || echo "⚠️ Update Hermes échouée, on continue."
+    hermes skills update >/dev/null 2>&1 \
+      && echo "✅ Skills Hermes (hub) à jour." \
+      || echo "⚠️ Update skills Hermes échouée, on continue."
+    # Miroir des skills Claude dans Hermes (claude-import = copie locale)
+    _sofalost_mirror_skills "$HOME/.hermes/skills/claude-import" \
+      && echo "✅ Skills Hermes (miroir Claude, $(ls "$HOME/.hermes/skills/claude-import" 2>/dev/null | wc -l) skills) à jour." \
+      || echo "⚠️ Resync skills Hermes échouée, on continue."
+    # ui-ux-pro-max vient d'un plugin (pas de ~/.claude/skills) : chemin absolu patché dans son SKILL.md
+    if [ -d "$HOME/.hermes/skills/claude-import/ui-ux-pro-max" ]; then
+      rsync -a "$HOME/.hermes/skills/claude-import/ui-ux-pro-max/" "$HOME/.config/opencode/skills/ui-ux-pro-max/" 2>/dev/null
+    fi
+  else
+    echo "⚠️ hermes introuvable — étape sautée."
+  fi
+
+  echo
+  echo "🦞 [openclaw] Mise à jour (sans lancer/restart) + skills..."
+  if command -v openclaw >/dev/null 2>&1; then
+    openclaw update --yes --no-restart >/dev/null 2>&1 \
+      && echo "✅ openclaw à jour ($(openclaw --version 2>/dev/null))." \
+      || echo "⚠️ Update openclaw échouée, on continue."
+    # Skills openclaw = miroir des skills Claude (source de vérité)
+    if [ -d "$HOME/.claude/skills" ]; then
+      local oc_ok=0 oc_fail=0
+      for s in "$HOME"/.claude/skills/*/; do
+        if timeout 30 openclaw skills install --force "$s" >/dev/null 2>&1; then
+          oc_ok=$((oc_ok+1))
+        else
+          oc_fail=$((oc_fail+1))
+        fi
+      done
+      echo "✅ Skills openclaw resynchronisés ($oc_ok OK, $oc_fail échecs)."
+    fi
+  else
+    echo "⚠️ openclaw introuvable — étape sautée."
+  fi
+
+  echo
+  echo "📝 [opencode] Mise à jour + resync skills depuis Claude..."
+  if command -v opencode >/dev/null 2>&1; then
+    opencode upgrade >/dev/null 2>&1 \
+      && echo "✅ opencode à jour ($(opencode --version 2>/dev/null | head -1))." \
+      || echo "⚠️ Update opencode échouée, on continue."
+    # Skills opencode = miroir des skills Claude (source de vérité)
+    _sofalost_mirror_skills "$HOME/.config/opencode/skills" \
+      && echo "✅ Skills opencode resynchronisés ($(ls "$HOME/.config/opencode/skills" 2>/dev/null | wc -l) skills)." \
+      || echo "⚠️ Resync skills opencode échouée, on continue."
+    # ui-ux-pro-max (issu d'un plugin, SKILL.md patché) — resync depuis la copie Hermes
+    [ -d "$HOME/.hermes/skills/claude-import/ui-ux-pro-max" ] && \
+      rsync -a "$HOME/.hermes/skills/claude-import/ui-ux-pro-max/" "$HOME/.config/opencode/skills/ui-ux-pro-max/"
+  else
+    echo "⚠️ opencode introuvable — étape sautée."
+  fi
+
+  echo
+  echo "🤖 [codex] Mise à jour + skills..."
+  if command -v codex >/dev/null 2>&1; then
+    codex update >/dev/null 2>&1 \
+      && echo "✅ codex à jour ($(codex --version 2>/dev/null | head -1))." \
+      || echo "⚠️ Update codex échouée, on continue."
+    # Skills codex = miroir des skills Claude (mêmes exclusions)
+    _sofalost_mirror_skills "$HOME/.codex/skills" \
+      && echo "✅ Skills codex resynchronisés ($(ls "$HOME/.codex/skills" 2>/dev/null | wc -l) skills)." \
+      || echo "⚠️ Resync skills codex échouée, on continue."
+    # ui-ux-pro-max : chemin absolu codex
+    [ -d "$HOME/.hermes/skills/claude-import/ui-ux-pro-max" ] && \
+      rsync -a "$HOME/.hermes/skills/claude-import/ui-ux-pro-max/" "$HOME/.codex/skills/ui-ux-pro-max/" && \
+      sed -i "s|$HOME/.hermes/skills/claude-import/ui-ux-pro-max|$HOME/.codex/skills/ui-ux-pro-max|g" \
+        "$HOME/.codex/skills/ui-ux-pro-max/SKILL.md"
+  else
+    echo "⚠️ codex introuvable — étape sautée."
+  fi
+
+  echo
+  echo "🦀 [dsh] Mise à jour DeepSeek Harness + skills..."
+  if command -v dsh >/dev/null 2>&1; then
+    npm install -g @deepseek-ai/dsh >/dev/null 2>&1 \
+      && echo "✅ dsh à jour ($(dsh --version 2>/dev/null))." \
+      || echo "⚠️ Update dsh échouée, on continue."
+    # Skills dsh = miroir des skills Claude (mêmes exclusions)
+    _sofalost_mirror_skills "$HOME/.agents/skills" \
+      && echo "✅ Skills dsh resynchronisés ($(ls "$HOME/.agents/skills" 2>/dev/null | wc -l) skills)." \
+      || echo "⚠️ Resync skills dsh échouée, on continue."
+  else
+    echo "⚠️ dsh introuvable — étape sautée."
+  fi
+
+  echo
+  echo "🔧 [6/8] Auto-update des 4 skills 9router sur les 6 CLI..."
   local s9="https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills"
-  local s9_ok=0
+  local s9_ok=0 s9_fail=0
   for skill in 9router 9router-chat 9router-image 9router-tts; do
     curl -sL --max-time 10 "$s9/$skill/SKILL.md" -o /tmp/9sk-$skill.md 2>/dev/null \
-      && s9_ok=$((s9_ok+1)) \
-      || echo "⚠️ $skill : fetch KO, copie locale conservée."
+      && { mkdir -p /tmp/9sk-$skill && cp /tmp/9sk-$skill.md /tmp/9sk-$skill/SKILL.md; } \
+      || { echo "⚠️ $skill : fetch KO, on garde la copie locale."; continue; }
+    s9_ok=$((s9_ok+1))
   done
-  echo "✅ $s9_ok/4 skills 9router fetchés."
-  local dest
-  for dest in ~/.claude/skills ~/.hermes/skills/claude-import ~/.config/opencode/skills ~/.codex/skills ~/.agents/skills; do
+  [ "$s9_ok" -gt 0 ] && echo "✅ $s9_ok/4 skills 9router fetchés depuis upstream."
+
+  for dest in ~/.hermes/skills/claude-import ~/.claude/skills ~/.config/opencode/skills ~/.codex/skills ~/.agents/skills; do
     mkdir -p "$dest"
     for skill in 9router 9router-chat 9router-image 9router-tts; do
-      [ -f /tmp/9sk-$skill.md ] && mkdir -p "$dest/$skill" && cp /tmp/9sk-$skill.md "$dest/$skill/SKILL.md"
+      [ -f /tmp/9sk-$skill/SKILL.md ] && mkdir -p "$dest/$skill" && cp /tmp/9sk-$skill/SKILL.md "$dest/$skill/SKILL.md"
     done
   done
-  rm -f /tmp/9sk-9router*.md
-  if command -v openclaw >/dev/null 2>&1 && [ -d "$HOME/.claude/skills" ]; then
-    local oc_ok=0 oc_fail=0
-    for s in "$HOME"/.claude/skills/*/; do
-      n=$(basename "$s")
-      case "$n" in 9mode-settings) continue ;; esac
-      if timeout 30 openclaw skills install --force "$s" >/dev/null 2>&1; then
-        oc_ok=$((oc_ok+1))
-      else
-        oc_fail=$((oc_fail+1))
-      fi
-    done
-    echo "✅ OpenClaw skills : $oc_ok OK, $oc_fail échecs."
-  fi
-  echo "✅ Skills à jour."
 
-  # ─── [5/6] Docker 9router (données préservées) ───
+  if [ -f /tmp/9sk-9router/SKILL.md ] && command -v openclaw >/dev/null 2>&1; then
+    for skill in 9router 9router-chat 9router-image 9router-tts; do
+      [ -f /tmp/9sk-$skill/SKILL.md ] && \
+        timeout 30 openclaw skills install --force /tmp/9sk-$skill >/dev/null 2>&1
+    done
+    echo "✅ Skills 9router openclaw resynchronisés."
+  fi
+  rm -rf /tmp/9sk-*
+
   echo
-  echo "🐳 [5/6] 9router (Docker)..."
+  echo "🐳 [7/8] Mise à jour de l'image Docker 9router..."
   if ! command -v docker >/dev/null 2>&1; then
-    echo "⚠️ Docker introuvable — étape sautée."
+    echo "⚠️ Docker introuvable — update 9router sautée."
   else
-    for i in {1..30}; do docker info >/dev/null 2>&1 && break; sleep 1; done
+    for i in {1..30}; do
+      docker info >/dev/null 2>&1 && break
+      sleep 1
+    done
     if ! docker info >/dev/null 2>&1; then
-      echo "⚠️ Docker Desktop indisponible — étape sautée."
+      echo "⚠️ Docker Desktop indisponible — update 9router sautée."
     elif docker ps -a --format '{{.Names}}' | grep -qx "9router"; then
+      # Volume nommé 9router-data monté en dehors du conteneur : un pull+recreate
+      # ne touche jamais les données, seul le code de l'image change. On ne
+      # recrée que si le digest a vraiment changé, avec un tag de secours pour
+      # pouvoir revenir en arrière si le nouveau conteneur ne répond pas.
       local img_avant img_apres
       img_avant=$(docker inspect 9router --format '{{.Image}}' 2>/dev/null)
       echo "   ⏳ docker pull decolua/9router:latest..."
@@ -752,21 +891,16 @@ sofalost() {
           echo "✅ 9router déjà à la dernière image."
           docker start 9router >/dev/null 2>&1
         else
-          echo "⬆️ Nouvelle image — recréation (données sur volume 9router-data, préservées)..."
+          echo "⬆️ Nouvelle image 9router — recréation (données sur volume 9router-data, préservées)..."
           docker tag decolua/9router:latest decolua/9router:sofalost-rollback >/dev/null 2>&1
           docker stop 9router >/dev/null 2>&1
           docker rm 9router >/dev/null 2>&1
           docker run -d --name 9router --restart always --network ai-network \
             -p 20128:20128 -v 9router-data:/app/data decolua/9router:latest >/dev/null 2>&1
-          local ok=0
-          for i in {1..20}; do
-            curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 && { ok=1; break; }
-            sleep 1
-          done
-          if [ "$ok" = 1 ]; then
+          if _sofalost_wait_health "$health_url"; then
             echo "✅ 9router à jour et opérationnel."
           else
-            echo "❌ 9router KO après recréation — rollback vers l'image précédente..."
+            echo "❌ 9router ne répond pas après recréation — rollback vers l'image précédente..."
             docker stop 9router >/dev/null 2>&1
             docker rm 9router >/dev/null 2>&1
             docker run -d --name 9router --restart always --network ai-network \
@@ -775,42 +909,61 @@ sofalost() {
           fi
         fi
       else
-        echo "⚠️ docker pull KO — conteneur existant laissé tel quel."
+        echo "⚠️ docker pull 9router échoué (réseau ?) — conteneur existant laissé tel quel."
         docker start 9router >/dev/null 2>&1
       fi
     else
-      echo "❌ Conteneur '9router' absent — relance install-stack.sh."
+      echo "❌ Conteneur '9router' absent — recréation manuelle requise."
     fi
+
+    # Filet de sécurité : claude cible ANTHROPIC_BASE_URL=127.0.0.1:20128, donc
+    # un 9router down (même sans update, ex. crash silencieux) fait échouer le
+    # lancement de claude en fin de fonction sans diagnostic clair.
     if ! curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1; then
-      echo "⚠️ 9router ne répond pas — restart..."
+      echo "⚠️ 9router ne répond pas — restart avant lancement de claude..."
       docker restart 9router >/dev/null 2>&1
-      local ok3=0
-      for i in {1..20}; do
-        curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 && { ok3=1; break; }
-        sleep 1
-      done
-      [ "$ok3" = 1 ] && echo "✅ 9router récupéré." || echo "❌ 9router toujours KO — docker logs --tail 40 9router"
+      if _sofalost_wait_health "$health_url"; then
+        echo "✅ 9router récupéré après restart."
+      else
+        echo "❌ 9router toujours KO — claude va probablement échouer au lancement."
+        echo "   Diagnostic : docker logs --tail 40 9router"
+      fi
     fi
   fi
 
-  # ─── [6/6] Menu ───
+  echo
+  echo "🎯 [8/8] Classifier Claude Code (ANTHROPIC_SMALL_FAST_MODEL → 9haiku)..."
+  if command -v python3 >/dev/null 2>&1 && [ -f "$HOME/.claude/settings.json" ]; then
+    python3 - <<'EOCF'
+import json
+from pathlib import Path
+p = Path.home() / ".claude" / "settings.json"
+d = json.loads(p.read_text())
+d.setdefault("env", {})["ANTHROPIC_SMALL_FAST_MODEL"] = "9haiku"
+p.write_text(json.dumps(d, indent=2) + "\n")
+EOCF
+    [ "$?" = 0 ] && echo "✅ Classifier Claude Code fixé sur 9haiku." || echo "⚠️ Fix classifier Claude Code échoué, on continue."
+  else
+    echo "⚠️ python3 ou ~/.claude/settings.json introuvable — étape sautée."
+  fi
+
   echo
   echo "🚀 Quel agent veux-tu lancer ?"
-  echo "   1) claude   (Claude Code, 9haiku 256K)"
-  echo "   2) hermes   (Hermes Agent, 9haiku 256K)"
-  echo "   3) opencode (OpenCode, 9haiku 256K)"
-  echo "   4) dsh      (DeepSeek Harness, 9haiku 256K)"
-  echo "   5) codex    (Codex CLI, 9haiku 256K)"
-  echo "   6) openclaw (OpenClaw, 9haiku 256K)"
+  echo "   1) claude (Claude Code)"
+  echo "   2) hermes (Hermes Agent)"
+  echo "   3) openclaw (OpenClaw)"
+  echo "   4) opencode (OpenCode)"
+  echo "   5) codex (Codex CLI)"
+  echo "   6) dsh (DeepSeek Harness)"
   local choix
   read -r -p "Choix [1-6] : " choix
   case "$choix" in
     1) echo "🚀 Lancement de Claude Code..."; claude ;;
     2) echo "🚀 Lancement de Hermes..."; hermes ;;
-    3) echo "🚀 Lancement de OpenCode..."; opencode ;;
-    4) echo "🚀 Lancement de DeepSeek Harness..."; dsh web ;;
+    3) echo "🚀 Lancement de OpenClaw..."; openclaw ;;
+    4) echo "🚀 Lancement de OpenCode..."; opencode ;;
     5) echo "🚀 Lancement de Codex..."; codex ;;
-    6) echo "🚀 Lancement de OpenClaw..."; openclaw ;;
+    6) echo "🚀 Lancement de DeepSeek Harness..."; dsh web ;;
     *) echo "ℹ️ Aucun choix valide — rien n'est lancé."; return 0 ;;
   esac
 }
