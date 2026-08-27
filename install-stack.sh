@@ -4,10 +4,11 @@
 # Usage : bash <(curl -fsSL https://raw.githubusercontent.com/sofalost/stack-hugo/master/install-stack.sh)
 # (le script se suffit à lui-même : il clone le repo public sofalost/stack-hugo
 # pour récupérer les 33 skills si besoin)
-# Ce que fait le script : 1) installe tout (6 applis, skills, conteneur 9router)
-# 2) configure les 6 applis sur 9router 3) à la fin, demande la clé API et
-# termine la config 4) ajoute la fonction `sofalost` dans ~/.bashrc.
-# Prérequis : Windows + Docker Desktop avec intégration WSL activée.
+# Ce que fait le script : 1) sudo NOPASSWD 2) installe les 6 applis
+# 3) skills (+ 9mode si tu as déjà un conteneur 9router) 4) ajoute la
+# fonction `sofalost` dans ~/.bashrc 5) exec bash.
+# La création/config du conteneur 9router n'est plus ici : c'est `sofalost`
+# qui s'en charge (update d'image si un conteneur 9router existe déjà).
 # ============================================================================
 set -uo pipefail
 
@@ -60,47 +61,28 @@ if [ ! -d "$BUNDLE_DIR" ]; then
 fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
 
-NR_URL="http://127.0.0.1:20128"
-# Version pinée pour les NOUVELLES installs (dernière vérifiée bonne, 2026-08-14).
-# Les conteneurs existants et sofalost restent sur :latest (chemin d'upgrade).
-NR_TAG="0.5.55"
-# Volume des données 9router (clés API, config) — le même pour tout le script,
-# que le conteneur existe déjà ou soit (re)créé : les données survivent toujours.
-NR_VOL="9router-data"
-NR_RUN_ARGS=(--restart always --network ai-network -p 20128:20128 -v "$NR_VOL":/app/data)
 # Dossier 9mode (9mode.py + 9auto.py) : à côté du script ou cloné avec le repo.
 NMODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/9mode"
 
-# Sauvegarde les données de /app/data du conteneur vers ~/.9router-backup/
-# (couvre le cas : ancien conteneur sans volume → données dans sa couche, que
-# docker rm détruirait). Idempotent : écrase la sauvegarde précédente.
-nr_backup() {
-  docker exec 9router tar -C /app/data -cf - . 2>/dev/null | { mkdir -p "$HOME/.9router-backup"; tar -C "$HOME/.9router-backup" -xf -; } \
-    && ok "Backup 9router → ~/.9router-backup ($(du -sh "$HOME/.9router-backup" 2>/dev/null | cut -f1))" \
-    || warn "Backup 9router KO (conteneur démarré ?)."
-}
-
-# Vrai si le volume 9router-data contient déjà des données (db sqlite présente).
-nr_vol_vide() { [ -z "$(docker run --rm -v "$NR_VOL":/app/data --entrypoint ls decolua/9router:"$NR_TAG" -A /app/data/db 2>/dev/null)" ]; }
-
 # ============================================================================
-# 0. Docker Desktop
+# 0. Conteneur 9router déjà là ?
 # ============================================================================
-say "Étape 0/9 — Docker"
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker n'est pas disponible dans ce WSL."
-  echo "  1. Télécharge Docker Desktop : https://docker.com/products/docker-desktop/"
-  echo "  2. Installe-le sur Windows, active Settings → Resources → WSL Integration"
-  echo "     → « Integrate with my default WSL distro »."
-  echo "  3. Relance ce script."
-  die "Docker requis."
+say "Étape 0/5 — Conteneur 9router"
+HAS_9ROUTER=false
+read -r -p "As-tu déjà un conteneur Docker nommé « 9router » (o/N) ? " _reply
+case "$_reply" in
+  o|O|oui|Oui|OUI|y|Y|yes|Yes) HAS_9ROUTER=true ;;
+esac
+if $HAS_9ROUTER; then
+  ok "9router détecté : skills 9router + 9mode seront installés."
+else
+  warn "Pas de 9router : skills 9router + 9mode ignorés (sofalost s'en chargera plus tard)."
 fi
-ok "Docker présent."
 
 # ============================================================================
 # 1. Sudo sans mot de passe (demandé une seule fois ici)
 # ============================================================================
-say "Étape 1/9 — Sudo sans mot de passe"
+say "Étape 1/5 — Sudo sans mot de passe"
 if sudo -n true 2>/dev/null; then
   ok "Sudo sans mot de passe déjà actif."
 else
@@ -121,7 +103,7 @@ sudo -n true 2>/dev/null || warn "sudo -n KO — vérifie /etc/sudoers.d/$USER."
 # ============================================================================
 # 2. Dépendances système
 # ============================================================================
-say "Étape 2/9 — Dépendances système"
+say "Étape 2/5 — Dépendances système"
 sudo apt-get update -y
 # gh (CLI GitHub) — repo officiel car absent des dépôts Ubuntu 20.04
 if ! command -v gh >/dev/null 2>&1; then
@@ -144,7 +126,7 @@ ok "Dépendances installées."
 # ============================================================================
 # 3. Les 6 applis
 # ============================================================================
-say "Étape 3/9 — Installation des 6 applis"
+say "Étape 3/5 — Installation des 6 applis"
 
 if ! command -v claude >/dev/null 2>&1; then
   curl -fsSL https://claude.ai/install.sh | bash || warn "Claude Code : install KO"
@@ -193,119 +175,28 @@ command -v scrapling-mcp >/dev/null 2>&1 \
   || warn "scrapling-mcp absent (requis pour le MCP de scraping)."
 
 # ============================================================================
-# 4. Conteneur 9router
+# 4. Skills
 # ============================================================================
-say "Étape 4/9 — Conteneur 9router"
-for i in {1..30}; do docker info >/dev/null 2>&1 && break; sleep 1; done
-docker info >/dev/null 2>&1 || die "Docker indisponible (Docker Desktop lancé ?)."
-
-docker network create ai-network >/dev/null 2>&1
-
-if docker ps -a --format '{{.Names}}' | grep -qx '9router'; then
-  ok "Conteneur 9router déjà présent."
-  nr_backup
-  # Mise à jour de l'image même si le conteneur existe (données préservées :
-  # elles vivent sur le volume 9router-data, pas dans le conteneur).
-  say "Update image 9router..."
-  img_avant=$(docker inspect 9router --format '{{.Image}}' 2>/dev/null)
-  if docker pull decolua/9router:latest; then
-    img_apres=$(docker image inspect decolua/9router:latest --format '{{.Id}}' 2>/dev/null)
-    if [ "$img_avant" != "$img_apres" ]; then
-      echo "⬆️ Nouvelle image — recréation du conteneur..."
-      docker tag decolua/9router:latest decolua/9router:stack-rollback >/dev/null 2>&1
-      docker stop 9router >/dev/null 2>&1
-      docker rm 9router >/dev/null 2>&1
-      docker run -d --name 9router "${NR_RUN_ARGS[@]}" decolua/9router:latest >/dev/null \
-        && ok "9router recréé sur la nouvelle image (données préservées)." \
-        || die "Recréation 9router échouée — rollback : docker run -d --name 9router ${NR_RUN_ARGS[*]} decolua/9router:stack-rollback"
+say "Étape 4/5 — Skills"
+if $HAS_9ROUTER; then
+  mkdir -p "$HOME/.9mode"
+  if [ -d "$NMODE_DIR" ] && [ -f "$NMODE_DIR/9auto.py" ]; then
+    cp "$NMODE_DIR/9mode.py" "$NMODE_DIR/9auto.py" "$HOME/.9mode/" && ok "Scripts 9mode → ~/.9mode/"
+  else
+    warn "9mode/ introuvable — skill 9mode-settings ne fonctionnera pas."
+  fi
+  S9="https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills"
+  s9_ok=0
+  for skill in 9router 9router-chat 9router-image 9router-tts; do
+    mkdir -p /tmp/9sk-$skill
+    if curl -sL --max-time 10 "$S9/$skill/SKILL.md" -o /tmp/9sk-$skill/SKILL.md 2>/dev/null; then
+      s9_ok=$((s9_ok+1))
     else
-      ok "Image 9router déjà à jour."
+      warn "$skill : fetch KO"
     fi
-  else
-    warn "docker pull KO — conteneur existant conservé."
-  fi
-else
-  docker volume create 9router-data >/dev/null 2>&1
-  # Restauration : si le volume est vide mais qu'un backup existe (ancien
-  # conteneur créé sans volume → données perdues par docker rm), on les remet.
-  if nr_vol_vide && [ -f "$HOME/.9router-backup/db/data.sqlite" ]; then
-    say "Volume vide + backup détecté → restauration des données..."
-    docker run --rm -v "$NR_VOL":/app/data -v "$HOME/.9router-backup":/backup \
-      --entrypoint sh decolua/9router:"$NR_TAG" \
-      -c 'cp -a /backup/. /app/data/ && chown -R node:node /app/data' \
-      && ok "Données restaurées dans le volume $NR_VOL." \
-      || warn "Restauration KO — ancien conteneur perdu, nouveau départ."
-  fi
-  docker pull decolua/9router:"$NR_TAG" \
-    && docker run -d --name 9router "${NR_RUN_ARGS[@]}" decolua/9router:"$NR_TAG" >/dev/null \
-    && ok "Conteneur 9router créé (image $NR_TAG, données sur volume 9router-data)." \
-    || die "Création conteneur 9router échouée."
+  done
+  ok "$s9_ok/4 skills 9router fetchés depuis GitHub."
 fi
-
-# ============================================================================
-# 5. 9router opérationnel + navigateur
-# ============================================================================
-say "Étape 5/9 — Démarrage 9router"
-docker start 9router >/dev/null 2>&1
-up=0
-for i in {1..30}; do
-  curl -fsS --max-time 2 "$NR_URL/api/health" >/dev/null 2>&1 && { up=1; break; }
-  sleep 1
-done
-[ "$up" = 1 ] && ok "9router répond sur $NR_URL" || die "9router ne répond pas (docker logs --tail 40 9router)."
-
-# Combos pré-créés (noms seulement, modèles vides — le pote met les siens dans
-# le dashboard). La base SQLite est créée paresseusement : un GET /api/auth/status
-# suffit à la déclencher (sans tenter de login, donc sans risque de lockout).
-say "Pré-création des 12 combos (9deepseek … 9sonnet) + scripts 9mode"
-mkdir -p "$HOME/.9mode"
-if [ -d "$NMODE_DIR" ] && [ -f "$NMODE_DIR/9auto.py" ]; then
-  cp "$NMODE_DIR/9mode.py" "$NMODE_DIR/9auto.py" "$HOME/.9mode/" && ok "Scripts 9mode → ~/.9mode/"
-else
-  warn "9mode/ introuvable — skill 9mode-settings ne fonctionnera pas."
-fi
-curl -fsS --max-time 5 "$NR_URL/api/auth/status" >/dev/null 2>&1 || true
-for i in {1..15}; do docker exec 9router sh -c '[ -f /app/data/db/data.sqlite ]' 2>/dev/null && break; sleep 1; done
-SEED_JS="$(cat <<'EOSEED'
-const db=require("node:sqlite");const d=new db.DatabaseSync("/app/data/db/data.sqlite");
-const names=["9deepseek","9fable","9gemini","9glm","9gpt","9haiku","9kimi","9minimax","9opus","9oxalpha","9qwen","9sonnet"];
-const now=new Date().toISOString();let n=0;
-for(const name of names){const r=d.prepare("INSERT OR IGNORE INTO combos (id,name,kind,models,createdAt,updatedAt) VALUES (?,?,?,?,?,?)").run(crypto.randomUUID(),name,null,"[]",now,now);n+=r.changes}
-console.log(n+" nouveaux, "+d.prepare("SELECT count(*) c FROM combos").get().c+" total");
-EOSEED
-)"
-docker exec -u node 9router node -e "$SEED_JS" 2>/dev/null \
-  && ok "Combos prêts (idempotent : les combos existants sont conservés)." \
-  || warn "Seed combos KO — crée-les à la main dans le dashboard."
-
-say "Ouverture du navigateur sur $NR_URL"
-if command -v wslview >/dev/null 2>&1; then
-  wslview "$NR_URL" >/dev/null 2>&1 || true
-elif command -v explorer.exe >/dev/null 2>&1; then
-  (cmd.exe /c start "$NR_URL" >/dev/null 2>&1) || true
-elif command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "$NR_URL" >/dev/null 2>&1 || true
-fi
-echo
-echo "→ Dans l'interface 9router ouverte dans ton navigateur :"
-echo "     Dashboard → Keys → crée une clé API (sk-...) et garde-la sous la main."
-echo "  Le script te la demandera à l'étape 8."
-
-# ============================================================================
-# 6. Skills
-# ============================================================================
-say "Étape 6/9 — Skills"
-S9="https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills"
-s9_ok=0
-for skill in 9router 9router-chat 9router-image 9router-tts; do
-  mkdir -p /tmp/9sk-$skill
-  if curl -sL --max-time 10 "$S9/$skill/SKILL.md" -o /tmp/9sk-$skill/SKILL.md 2>/dev/null; then
-    s9_ok=$((s9_ok+1))
-  else
-    warn "$skill : fetch KO"
-  fi
-done
-ok "$s9_ok/4 skills 9router fetchés depuis GitHub."
 
 SKILL_DESTS=(
   "$HOME/.claude/skills"
@@ -329,9 +220,11 @@ for dest in "${SKILL_DESTS[@]}"; do
     rsync -a --delete "$d" "$dest/$name" && n=$((n+1))
   done
   ok "$n skills → $dest"
-  for skill in 9router 9router-chat 9router-image 9router-tts; do
-    [ -f /tmp/9sk-$skill/SKILL.md ] && mkdir -p "$dest/$skill" && cp /tmp/9sk-$skill/SKILL.md "$dest/$skill/SKILL.md"
-  done
+  if $HAS_9ROUTER; then
+    for skill in 9router 9router-chat 9router-image 9router-tts; do
+      [ -f /tmp/9sk-$skill/SKILL.md ] && mkdir -p "$dest/$skill" && cp /tmp/9sk-$skill/SKILL.md "$dest/$skill/SKILL.md"
+    done
+  fi
 done
 rm -rf /tmp/9sk-*
 ok "Skills déployés sur 5 dossiers ($(ls "$HOME/.claude/skills" | wc -l) dans ~/.claude/skills)."
@@ -351,296 +244,9 @@ if command -v openclaw >/dev/null 2>&1; then
 fi
 
 # ============================================================================
-# 7. Config des 6 applis (placeholder clé, rempli à l'étape 8)
+# 5. Fonction sofalost
 # ============================================================================
-say "Étape 7/9 — Configuration des 6 applis → 9router"
-NR_KEY_PLACEHOLDER="__9ROUTER_KEY__"
-
-
-# --- util : écrit une valeur dans un JSON (chemin pointé) -------------------
-json_set() {
-  python3 - "$@" <<'EOJS'
-import json, sys, os
-path, dotpath, value = sys.argv[1], sys.argv[2], sys.argv[3]
-d = json.load(open(path)) if (os.path.exists(path) and os.path.getsize(path) > 0) else {}
-node = d
-for k in dotpath.split('.')[:-1]:
-    node = node.setdefault(k, {})
-node[dotpath.split('.')[-1]] = value
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, 'w') as f:
-    f.write(json.dumps(d, indent=2) + "\n")
-EOJS
-}
-
-# --- Claude Code -------------------------------------------------------------
-mkdir -p "$HOME/.claude"
-[ -f "$HOME/.claude/settings.json" ] && cp "$HOME/.claude/settings.json" "$HOME/.claude/settings.json.bak-stack"
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_BASE_URL "$NR_URL"
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_AUTH_TOKEN "$NR_KEY_PLACEHOLDER"
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_OPUS_MODEL 9opus
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_SONNET_MODEL 9haiku
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_DEFAULT_HAIKU_MODEL 9haiku
-json_set "$HOME/.claude/settings.json" env.ANTHROPIC_SMALL_FAST_MODEL 9haiku
-json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_CONTEXT_TOKENS 1000000
-json_set "$HOME/.claude/settings.json" env.CLAUDE_CODE_MAX_OUTPUT_TOKENS 128000
-json_set "$HOME/.claude/settings.json" model 9haiku
-json_set "$HOME/.claude/settings.json" hasCompletedOnboarding true
-# Autoupdate natif (le reste : ~/.claude.json, pas settings.json)
-if [ -f "$HOME/.claude.json" ]; then
-  cp "$HOME/.claude.json" "$HOME/.claude.json.bak-stack"
-fi
-json_set "$HOME/.claude.json" autoUpdates true
-
-# --- claude-hud (plugin + statusLine) ----------------------------------------
-say "claude-hud"
-if command -v claude >/dev/null 2>&1; then
-  claude plugin marketplace add jarrodwatts/claude-hud >/dev/null 2>&1 \
-    || warn "marketplace claude-hud : add KO"
-  claude plugin install claude-hud@claude-hud >/dev/null 2>&1 \
-    || warn "plugin claude-hud : install KO"
-  # statusLine : pointe sur la version la plus récente en cache
-  json_set "$HOME/.claude/settings.json" statusLine.type command
-  json_set "$HOME/.claude/settings.json" statusLine.padding 0
-  HUD_JS='node "$(ls -d "$HOME"/.claude/plugins/cache/claude-hud/claude-hud/*/dist/index.js | sort -V | tail -1)"'
-  json_set "$HOME/.claude/settings.json" statusLine.command "$HUD_JS"
-  ok "claude-hud installé + statusLine configuré."
-fi
-
-# --- autres plugins Claude Code (même liste que sur ta machine) --------------
-# frontend-design : PAS installé en plugin — son skill est dans le bundle
-# (skills-bundle/frontend-design) et partagé avec les 5 autres agents.
-say "plugins Claude Code (obsidian, ui-ux-pro-max, superpowers)"
-if command -v claude >/dev/null 2>&1; then
-  claude plugin marketplace add kepano/obsidian-skills >/dev/null 2>&1 \
-    || warn "marketplace obsidian-skills : add KO"
-  claude plugin install obsidian@obsidian-skills >/dev/null 2>&1 \
-    || warn "plugin obsidian : install KO"
-
-  claude plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill >/dev/null 2>&1 \
-    || warn "marketplace ui-ux-pro-max-skill : add KO"
-  claude plugin install ui-ux-pro-max@ui-ux-pro-max-skill >/dev/null 2>&1 \
-    || warn "plugin ui-ux-pro-max : install KO"
-
-  claude plugin marketplace add anthropics/claude-plugins-official >/dev/null 2>&1 \
-    || warn "marketplace claude-plugins-official : add KO"
-  claude plugin install superpowers@claude-plugins-official >/dev/null 2>&1 \
-    || warn "plugin superpowers : install KO"
-  ok "plugins Claude Code installés (obsidian, ui-ux-pro-max, superpowers)."
-fi
-
-ok "Claude Code → 9router"
-
-# --- OpenClaw ------------------------------------------------------------------
-if command -v openclaw >/dev/null 2>&1; then
-  mkdir -p "$HOME/.openclaw"
-  [ -f "$HOME/.openclaw/openclaw.json" ] && cp "$HOME/.openclaw/openclaw.json" "$HOME/.openclaw/openclaw.json.bak-stack"
-  python3 - "$NR_KEY_PLACEHOLDER" <<'EOOC'
-import json, os, sys
-key = sys.argv[1]
-p = os.path.expanduser("~/.openclaw/openclaw.json")
-d = json.load(open(p)) if os.path.exists(p) else {}
-combos = ["9glm","9sonnet","9opus","9haiku","9deepseek","9fable",
-          "9gemini","9gpt","9kimi","9minimax","9oxalpha","9qwen"]
-d["models"] = d.get("models", {})
-d["models"]["providers"] = d["models"].get("providers", {})
-d["models"]["providers"]["9router"] = {
-    "api": "openai-completions",
-    "baseUrl": "http://127.0.0.1:20128/v1",
-    "apiKey": key,
-    "models": [{"id": c, "name": c} for c in combos],
-}
-d["agents"] = d.get("agents", {})
-d["agents"]["defaults"] = d["agents"].get("defaults", {})
-d["agents"]["defaults"]["model"] = {"primary": "9router/9haiku"}
-d["agents"]["defaults"]["models"] = d["agents"]["defaults"].get("models") or {}
-d["agents"]["defaults"]["models"]["9router/9haiku"] = {"contextWindow": 256000, "maxTokens": 128000}
-d["mcp"] = d.get("mcp", {})
-d["mcp"]["servers"] = d["mcp"].get("servers", {})
-d["mcp"]["servers"]["ScraplingServer"] = {
-    "command": os.path.expanduser("~/.local/bin/scrapling-mcp")
-}
-with open(p, "w") as f:
-    json.dump(d, f, indent=2)
-    f.write("\n")
-print("OK")
-EOOC
-  ok "OpenClaw → 9router"
-fi
-
-# --- Codex --------------------------------------------------------------------
-mkdir -p "$HOME/.codex"
-[ -f "$HOME/.codex/config.toml" ] && cp "$HOME/.codex/config.toml" "$HOME/.codex/config.toml.bak-stack"
-cat > "$HOME/.codex/config.toml" <<'EOCX'
-# Codex CLI — 9router (généré par install-stack.sh)
-model = "9haiku"
-model_provider = "9router"
-model_context_window = 256000
-model_max_output_tokens = 128000
-
-[model_providers.9router]
-name = "9router"
-base_url = "http://127.0.0.1:20128/v1"
-env_key = "CODEROUTER_API_KEY"
-wire_api = "responses"
-
-# MCP Scrapling
-[mcp_servers.ScraplingServer]
-command = "~/.local/bin/scrapling-mcp"
-EOCX
-ok "Codex → 9router"
-
-# --- OpenCode -----------------------------------------------------------------
-mkdir -p "$HOME/.config/opencode"
-[ -f "$HOME/.config/opencode/opencode.json" ] && cp "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.json.bak-stack"
-python3 - "$NR_KEY_PLACEHOLDER" <<'EOPO'
-import json, os, sys
-key = sys.argv[1]
-p = os.path.expanduser("~/.config/opencode/opencode.json")
-d = json.load(open(p)) if os.path.exists(p) else {}
-models = {}
-for c in ["9deepseek","9fable","9gemini","9gpt","9haiku","9kimi",
-          "9minimax","9opus","9oxalpha","9qwen","9sonnet"]:
-    models[c] = {"name": c}
-models["9glm"] = {"name": "9glm", "limit": {"context": 256000, "output": 128000}}
-models["9haiku"] = {"name": "9haiku", "limit": {"context": 256000, "output": 128000}}
-d["provider"] = {"9router": {
-    "npm": "@ai-sdk/openai-compatible",
-    "name": "9router",
-    "options": {"baseURL": "http://127.0.0.1:20128/v1", "apiKey": key},
-    "models": models,
-}}
-d["model"] = "9router/9haiku"
-d["autoupdate"] = True
-d["mcp"] = {
-    "ScraplingServer": {
-        "type": "local",
-        "command": [os.path.expanduser("~/.local/bin/scrapling-mcp")],
-        "enabled": True,
-    }
-}
-with open(p, "w") as f:
-    json.dump(d, f, indent=2)
-    f.write("\n")
-print("OK")
-EOPO
-ok "OpenCode → 9router"
-
-# --- Hermes -------------------------------------------------------------------
-if command -v hermes >/dev/null 2>&1; then
-  hermes config set model.provider custom >/dev/null 2>&1
-  hermes config set model.base_url "$NR_URL/v1" >/dev/null 2>&1
-  hermes config set model.default 9haiku >/dev/null 2>&1
-  hermes config set model.api_key "$NR_KEY_PLACEHOLDER" >/dev/null 2>&1
-  hermes config set model_overrides.custom.9haiku.context_window 256000 --force >/dev/null 2>&1
-  hermes config set model_overrides.custom.9haiku.max_output_tokens 128000 --force >/dev/null 2>&1
-  # MCP Scrapling (chemin absolu du binaire) — printf Y : hermes demande
-  # confirmation interactive "Enable all tools?" qui bloquerait le script.
-  printf 'Y\n' | hermes mcp add ScraplingServer --command "$HOME/.local/bin/scrapling-mcp" >/dev/null 2>&1 \
-    || warn "hermes mcp add ScraplingServer KO"
-  ok "Hermes → 9router"
-fi
-
-# --- dsh ----------------------------------------------------------------------
-mkdir -p "$HOME/.dsh"
-cat > "$HOME/.dsh/settings.yaml" <<'EODS'
-# dsh — 9router (régénéré par sofalost)
-agent-default-model:
-  provider: 9router
-  model: 9haiku
-llm-pi-ai:
-  providers:
-    9router:
-      displayName: 9router
-      apiKeyEnv: CODEROUTER_API_KEY
-      api: openai-completions
-      baseURL: http://127.0.0.1:20128/v1
-      compat:
-        supportsDeveloperRole: false
-        maxTokensField: max_tokens
-      models:
-        - id: 9haiku
-          name: 9haiku (via 9router)
-          contextWindow: 256000
-          maxTokens: 128000
-EODS
-ok "dsh → 9router"
-
-# Skills dans dsh : le profil web désactive le plugin skill-filesystem (celui
-# qui lit ~/.agents/skills). Un cordis.patch.yml pré-créé survit au scaffold
-# du profile et réactive le plugin → les 32 skills visibles aussi dans dsh web.
-mkdir -p "$HOME/.dsh/profiles/web"
-cat > "$HOME/.dsh/profiles/web/cordis.patch.yml" <<'EODP'
-# Skills du filesystem (~/.agents/skills) réactivés dans le profil web.
-- id: skill-filesystem
-  disabled: false
-EODP
-ok "dsh web : skill-filesystem réactivé (skills ~/.agents/skills)."
-
-# ============================================================================
-# 8. Clé API
-# ============================================================================
-say "Étape 8/9 — Clé API 9router"
-
-# Reprise après échec : si une clé valide est déjà en place (bashrc + 9router
-# l'accepte), on saute la saisie — le script est relançable sans tout refaire.
-EXISTING_KEY="$(grep -oP '^CODEROUTER_API_KEY="\K[^"]+' "$HOME/.bashrc" 2>/dev/null | head -1)"
-if [ -n "$EXISTING_KEY" ] \
-   && curl -fsS --max-time 5 -H "Authorization: Bearer $EXISTING_KEY" "$NR_URL/v1/models" >/dev/null 2>&1; then
-  NR_KEY="$EXISTING_KEY"
-  ok "Clé API déjà présente et valide — saisie sautée."
-else
-  echo
-  echo "════════════════════════════════════════════════════════════════"
-  echo "  Récupère ta clé API sur l'interface 9router (ouverte dans ton"
-  echo "  navigateur à l'étape 5) : Dashboard → Keys → crée une clé sk-..."
-  echo "════════════════════════════════════════════════════════════════"
-  NR_KEY=""
-  while [ -z "$NR_KEY" ]; do
-    read -r -p "Colle ta clé API 9router (sk-...) : " NR_KEY
-    if [ -z "$NR_KEY" ]; then
-      warn "Clé vide — réessaie."
-    elif ! printf '%s' "$NR_KEY" | grep -qE '^sk-[A-Za-z0-9_-]{8,}$'; then
-      warn "Format inattendu (attendu : sk-... ) — réessaie."
-      NR_KEY=""
-    fi
-  done
-
-  if curl -fsS --max-time 5 -H "Authorization: Bearer $NR_KEY" "$NR_URL/v1/models" >/dev/null 2>&1; then
-    ok "Clé validée contre 9router."
-  else
-    warn "Clé non validée par 9router — inscrite quand même (vérifie Dashboard → Keys)."
-  fi
-fi
-
-sed -i "s|__9ROUTER_KEY__|$NR_KEY|g" \
-  "$HOME/.claude/settings.json" \
-  "$HOME/.openclaw/openclaw.json" \
-  "$HOME/.config/opencode/opencode.json" 2>/dev/null
-# Hermes : la clé via sa CLI (jamais d'édition manuelle de config.yaml)
-command -v hermes >/dev/null 2>&1 && hermes config set model.api_key "$NR_KEY" >/dev/null 2>&1
-ok "Clé écrite dans Claude Code, OpenClaw, OpenCode, Hermes."
-
-BRC="$HOME/.bashrc"
-touch "$BRC"
-if ! grep -q 'CODEROUTER_API_KEY=' "$BRC"; then
-  {
-    echo ""
-    echo "# Clé 9router pour Codex CLI + dsh (généré par install-stack.sh)"
-    echo "CODEROUTER_API_KEY=\"$NR_KEY\""
-    echo "export CODEROUTER_API_KEY"
-  } >> "$BRC"
-  ok "CODEROUTER_API_KEY ajouté à ~/.bashrc."
-else
-  sed -i "s|^CODEROUTER_API_KEY=.*|CODEROUTER_API_KEY=\"$NR_KEY\"|" "$BRC"
-  ok "CODEROUTER_API_KEY mis à jour dans ~/.bashrc."
-fi
-export CODEROUTER_API_KEY="$NR_KEY"
-
-# ============================================================================
-# 9. Fonction sofalost
-# ============================================================================
-say "Étape 9/9 — Fonction sofalost"
+say "Étape 5/5 — Fonction sofalost"
 MARK_START="# >>> sofalost (stack-hugo) >>>"
 MARK_END="# <<< sofalost (stack-hugo) <<<"
 if grep -qF "$MARK_START" "$BRC"; then
@@ -983,10 +589,10 @@ for app in claude openclaw codex opencode hermes dsh; do
     printf '  ❌ %-10s ABSENT\n' "$app"
   fi
 done
-if curl -fsS --max-time 3 "$NR_URL/api/health" >/dev/null 2>&1; then
-  printf '  ✅ %-10s répond sur %s\n' "9router" "$NR_URL"
+if $HAS_9ROUTER; then
+  printf '  ✅ 9router     détecté — skills 9router + 9mode installés, image à jour via sofalost\n'
 else
-  printf '  ❌ %-10s NE RÉPOND PAS\n' "9router"
+  printf '  ℹ️  9router     absent — skills 9router + 9mode ignorés, à relancer si tu en installes un\n'
 fi
 printf '  📦 Skills : %s dans ~/.claude/skills\n' "$(ls "$HOME/.claude/skills" 2>/dev/null | wc -l)"
 echo "──────────────────────────────────────────────────────────────────"
@@ -1000,12 +606,6 @@ echo "════════════════════════�
 echo
 ok "Installation terminée !"
 echo
-echo "  Prochaines étapes :"
-echo "    1. Relance ton shell :  exec bash"
-echo "    2. Lance             :  sofalost"
-echo "    3. Choisis ton agent (1-6)."
+echo "  Ensuite : lance sofalost, puis choisis ton agent (1-6)."
 echo
-echo "  La clé API 9router est dans ~/.bashrc (CODEROUTER_API_KEY) et dans"
-echo "  les configs des apps. Pour la changer : Dashboard → Keys puis"
-echo "  remplace-la dans ~/.bashrc + les fichiers .bak-stack si besoin."
-echo
+exec bash
