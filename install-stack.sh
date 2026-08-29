@@ -5,7 +5,7 @@
 # (le script se suffit à lui-même : il clone le repo public sofalost/stack-hugo
 # pour récupérer les 33 skills si besoin)
 # Ce que fait le script : 1) sudo NOPASSWD 2) installe les 6 applis
-# 3) skills (+ 9mode si tu as déjà un conteneur 9router) 4) plugins Claude
+# 3) skills (+ skills 9router si tu as déjà un conteneur) 4) plugins Claude
 # Code (les mêmes que sur ta machine, Claude Code uniquement — pas mirroré
 # vers les 5 autres CLI) 5) ajoute la fonction `sofalost` dans ~/.bashrc
 # 6) exec bash.
@@ -57,14 +57,10 @@ if [ ! -d "$BUNDLE_DIR" ]; then
   rm -rf /tmp/stack-hugo
   git clone --depth 1 "$REPO" /tmp/stack-hugo \
     && BUNDLE_DIR="/tmp/stack-hugo/skills-bundle" \
-    && NMODE_DIR="/tmp/stack-hugo/9mode" \
-    && ok "Repo cloné (33 skills + scripts 9mode)." \
+    && ok "Repo cloné (33 skills)." \
     || die "Clonage sofalost/stack-hugo échoué (réseau ?)."
 fi
 [ -d "$BUNDLE_DIR" ] || die "Skills introuvables (bundle ou repo)."
-
-# Dossier 9mode (9mode.py + 9auto.py) : à côté du script ou cloné avec le repo.
-NMODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/9mode"
 
 # ============================================================================
 # 0. Conteneur 9router déjà là ?
@@ -76,9 +72,9 @@ case "$_reply" in
   o|O|oui|Oui|OUI|y|Y|yes|Yes) HAS_9ROUTER=true ;;
 esac
 if $HAS_9ROUTER; then
-  ok "9router détecté : skills 9router + 9mode seront installés."
+  ok "9router détecté : skills 9router seront installés."
 else
-  warn "Pas de 9router : skills 9router + 9mode ignorés (sofalost s'en chargera plus tard)."
+  warn "Pas de 9router : skills 9router ignorés (sofalost s'en chargera plus tard)."
 fi
 
 # ============================================================================
@@ -181,12 +177,6 @@ command -v scrapling-mcp >/dev/null 2>&1 \
 # ============================================================================
 say "Étape 4/6 — Skills"
 if $HAS_9ROUTER; then
-  mkdir -p "$HOME/.9mode"
-  if [ -d "$NMODE_DIR" ] && [ -f "$NMODE_DIR/9auto.py" ]; then
-    cp "$NMODE_DIR/9mode.py" "$NMODE_DIR/9auto.py" "$HOME/.9mode/" && ok "Scripts 9mode → ~/.9mode/"
-  else
-    warn "9mode/ introuvable — skill 9mode-settings ne fonctionnera pas."
-  fi
   S9="https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills"
   s9_ok=0
   for skill in 9router 9router-chat 9router-image 9router-tts; do
@@ -235,7 +225,6 @@ if command -v openclaw >/dev/null 2>&1; then
   oc_ok=0; oc_fail=0
   for s in "$HOME"/.claude/skills/*/; do
     n=$(basename "$s")
-    case "$n" in 9mode-settings) continue ;; esac
     if timeout 30 openclaw skills install --force "$s" >/dev/null 2>&1; then
       oc_ok=$((oc_ok+1))
     else
@@ -639,9 +628,9 @@ for app in claude openclaw codex opencode hermes dsh; do
   fi
 done
 if $HAS_9ROUTER; then
-  printf '  ✅ 9router     détecté — skills 9router + 9mode installés, image à jour via sofalost\n'
+  printf '  ✅ 9router     détecté — skills 9router installés, image à jour via sofalost\n'
 else
-  printf '  ℹ️  9router     absent — skills 9router + 9mode ignorés, à relancer si tu en installes un\n'
+  printf '  ℹ️  9router     absent — skills 9router ignorés, à relancer si tu en installes un\n'
 fi
 printf '  📦 Skills : %s dans ~/.claude/skills\n' "$(ls "$HOME/.claude/skills" 2>/dev/null | wc -l)"
 echo "──────────────────────────────────────────────────────────────────"
