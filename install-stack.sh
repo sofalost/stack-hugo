@@ -5,8 +5,10 @@
 # (le script se suffit à lui-même : il clone le repo public sofalost/stack-hugo
 # pour récupérer les 33 skills si besoin)
 # Ce que fait le script : 1) sudo NOPASSWD 2) installe les 6 applis
-# 3) skills (+ 9mode si tu as déjà un conteneur 9router) 4) ajoute la
-# fonction `sofalost` dans ~/.bashrc 5) exec bash.
+# 3) skills (+ 9mode si tu as déjà un conteneur 9router) 4) plugins Claude
+# Code (les mêmes que sur ta machine, Claude Code uniquement — pas mirroré
+# vers les 5 autres CLI) 5) ajoute la fonction `sofalost` dans ~/.bashrc
+# 6) exec bash.
 # La création/config du conteneur 9router n'est plus ici : c'est `sofalost`
 # qui s'en charge (update d'image si un conteneur 9router existe déjà).
 # ============================================================================
@@ -67,7 +69,7 @@ NMODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/9mode"
 # ============================================================================
 # 0. Conteneur 9router déjà là ?
 # ============================================================================
-say "Étape 0/5 — Conteneur 9router"
+say "Étape 0/6 — Conteneur 9router"
 HAS_9ROUTER=false
 read -r -p "As-tu déjà un conteneur Docker nommé « 9router » (o/N) ? " _reply
 case "$_reply" in
@@ -82,7 +84,7 @@ fi
 # ============================================================================
 # 1. Sudo sans mot de passe (demandé une seule fois ici)
 # ============================================================================
-say "Étape 1/5 — Sudo sans mot de passe"
+say "Étape 1/6 — Sudo sans mot de passe"
 if sudo -n true 2>/dev/null; then
   ok "Sudo sans mot de passe déjà actif."
 else
@@ -103,7 +105,7 @@ sudo -n true 2>/dev/null || warn "sudo -n KO — vérifie /etc/sudoers.d/$USER."
 # ============================================================================
 # 2. Dépendances système
 # ============================================================================
-say "Étape 2/5 — Dépendances système"
+say "Étape 2/6 — Dépendances système"
 sudo apt-get update -y
 # gh (CLI GitHub) — repo officiel car absent des dépôts Ubuntu 20.04
 if ! command -v gh >/dev/null 2>&1; then
@@ -126,7 +128,7 @@ ok "Dépendances installées."
 # ============================================================================
 # 3. Les 6 applis
 # ============================================================================
-say "Étape 3/5 — Installation des 6 applis"
+say "Étape 3/6 — Installation des 6 applis"
 
 if ! command -v claude >/dev/null 2>&1; then
   curl -fsSL https://claude.ai/install.sh | bash || warn "Claude Code : install KO"
@@ -177,7 +179,7 @@ command -v scrapling-mcp >/dev/null 2>&1 \
 # ============================================================================
 # 4. Skills
 # ============================================================================
-say "Étape 4/5 — Skills"
+say "Étape 4/6 — Skills"
 if $HAS_9ROUTER; then
   mkdir -p "$HOME/.9mode"
   if [ -d "$NMODE_DIR" ] && [ -f "$NMODE_DIR/9auto.py" ]; then
@@ -244,9 +246,56 @@ if command -v openclaw >/dev/null 2>&1; then
 fi
 
 # ============================================================================
-# 5. Fonction sofalost
+# 5. Plugins Claude Code (installés là où tu les as, toi)
 # ============================================================================
-say "Étape 5/5 — Fonction sofalost"
+# Claude Code uniquement — aucun mirroring vers les 5 autres CLI (ce sont des
+# plugins Claude Code, pas des skills du bundle).
+say "Étape 5/6 — Plugins Claude Code"
+if command -v claude >/dev/null 2>&1; then
+  json_set() {
+    python3 - "$@" <<'EOJS'
+import json, sys, os
+path, dotpath, value = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(path)) if (os.path.exists(path) and os.path.getsize(path) > 0) else {}
+node = d
+for k in dotpath.split('.')[:-1]:
+    node = node.setdefault(k, {})
+node[dotpath.split('.')[-1]] = value
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+EOJS
+  }
+  install_plugin() {
+    local marketplace="$1" plugin_id="$2"
+    claude plugin marketplace add "$marketplace" >/dev/null 2>&1 \
+      || warn "marketplace $marketplace : add KO"
+    claude plugin install "$plugin_id" >/dev/null 2>&1 \
+      || warn "plugin $plugin_id : install KO"
+  }
+  install_plugin anthropics/claude-code                       frontend-design@claude-code-plugins
+  install_plugin kepano/obsidian-skills                        obsidian@obsidian-skills
+  install_plugin nextlevelbuilder/ui-ux-pro-max-skill           ui-ux-pro-max@ui-ux-pro-max-skill
+  install_plugin anthropics/claude-plugins-official             superpowers@claude-plugins-official
+  install_plugin bitwize-music-studio/claude-ai-music-skills     bitwize-music@bitwize-music
+  install_plugin https://github.com/fadelabs/phantom.git         phantom@phantom
+
+  install_plugin jarrodwatts/claude-hud                          claude-hud@claude-hud
+  # statusLine : pointe sur la version la plus récente en cache
+  json_set "$HOME/.claude/settings.json" statusLine.type command
+  json_set "$HOME/.claude/settings.json" statusLine.padding 0
+  HUD_JS='node "$(ls -d "$HOME"/.claude/plugins/cache/claude-hud/claude-hud/*/dist/index.js | sort -V | tail -1)"'
+  json_set "$HOME/.claude/settings.json" statusLine.command "$HUD_JS"
+
+  ok "Plugins Claude Code installés (frontend-design, obsidian, ui-ux-pro-max, superpowers, bitwize-music, phantom, claude-hud + statusLine)."
+else
+  warn "claude introuvable — plugins Claude Code sautés."
+fi
+
+# ============================================================================
+# 6. Fonction sofalost
+# ============================================================================
+say "Étape 6/6 — Fonction sofalost"
 MARK_START="# >>> sofalost (stack-hugo) >>>"
 MARK_END="# <<< sofalost (stack-hugo) <<<"
 if grep -qF "$MARK_START" "$BRC"; then

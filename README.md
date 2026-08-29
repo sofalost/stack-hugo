@@ -21,7 +21,8 @@ Pendant l'exécution, le script demande :
 5. **Les 6 applis** — Claude Code, OpenClaw, Codex, OpenCode, Hermes, dsh + Scrapling MCP (via uv). Skip si déjà installées.
 6. **Skills** — déploie les 33 skills dans 5 dossiers (claude, hermes, opencode, codex, agents). Les skills extraits des plugins Claude Code (frontend-design, ui-ux-pro-max, obsidian ×5) ne sont PAS déployés dans claude (déjà présents via les plugins), mais le sont dans les 4 autres dossiers. Visibles aussi dans **dsh** (le profil web désactive le plugin par défaut ; le script le réactive via `~/.dsh/profiles/web/cordis.patch.yml`) et dans **OpenClaw** (installés un par un via sa CLI).
    Si tu as répondu **oui** à l'étape 2 : télécharge en plus les 4 skills 9router depuis GitHub (9router, 9router-chat, 9router-image, 9router-tts) et copie les **scripts 9mode** (`~/.9mode/9mode.py` + `9auto.py` : pilotage RTK/Caveman/Ponytail).
-7. **Fonction `sofalost`** — ajoutée dans `~/.bashrc` : update complet (Ubuntu + 6 applis + skills + image 9router avec données préservées si un conteneur existe déjà) puis menu de lancement 1-6.
+7. **Plugins Claude Code** — installe sur Claude Code (uniquement — aucun mirroring vers les 5 autres CLI) les 7 plugins présents sur la machine de Hugo : frontend-design, obsidian, ui-ux-pro-max, superpowers, bitwize-music, phantom, claude-hud (+ configuration de sa statusLine).
+8. **Fonction `sofalost`** — ajoutée dans `~/.bashrc` : update complet (Ubuntu + 6 applis + skills + image 9router avec données préservées si un conteneur existe déjà) puis menu de lancement 1-6.
 
 Le script se termine par `exec bash` : le shell est rechargé automatiquement, pas besoin de le faire à la main.
 
